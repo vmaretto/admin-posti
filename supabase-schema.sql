@@ -91,9 +91,32 @@ SELECT
     (SELECT COUNT(*) FROM transazioni WHERE stato_riconciliazione = 'da_riconciliare') as da_riconciliare
 FROM transazioni t;
 
+-- Tabella Soggetti Cluster (per aggregazione varianti stesso soggetto)
+CREATE TABLE IF NOT EXISTS soggetti_cluster (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nome_normalizzato TEXT NOT NULL UNIQUE,
+  varianti TEXT[] NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_soggetti_cluster_nome ON soggetti_cluster(nome_normalizzato);
+
+-- Tabella Riconciliazioni (per tracciare associazioni)
+CREATE TABLE IF NOT EXISTS riconciliazioni (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  fattura_id UUID REFERENCES fatture(id),
+  transazione_id UUID REFERENCES transazioni(id),
+  importo DECIMAL(12,2),
+  tipo VARCHAR(20),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(fattura_id, transazione_id)
+);
+
 -- RLS policies (disabled for simplicity - single user app)
 ALTER TABLE fatture ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transazioni ENABLE ROW LEVEL SECURITY;
+ALTER TABLE soggetti_cluster ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all on fatture" ON fatture FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all on transazioni" ON transazioni FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on soggetti_cluster" ON soggetti_cluster FOR ALL USING (true) WITH CHECK (true);

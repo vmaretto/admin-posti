@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
+import { normalizeSubject } from '@/lib/normalize'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,6 +13,7 @@ export async function GET(request: NextRequest) {
   const stato = searchParams.get('stato')
   const from = searchParams.get('from')
   const to = searchParams.get('to')
+  const grouped = searchParams.get('grouped') === 'true'
   
   // Query transazioni
   let query = supabase
@@ -61,6 +63,64 @@ export async function GET(request: NextRequest) {
     ...t,
     fatture: fattureByTransazione.get(t.id) || []
   }))
+  
+  // Se grouped=true, raggruppa per controparte normalizzata
+  if (grouped) {
+    const contropartiMap = new Map<string, {
+      nome: string
+      nome_normalizzato: string
+      transazioni: any[]
+      totale_entrate: number
+      totale_uscite: number
+      count: number
+      riconciliate: number
+    }>()
+    
+    for (const t of result) {
+      const nomeOriginale = t.controparte || 'Sconosciuto'
+      const nomeNormalizzato = normalizeSubject(nomeOriginale)
+      
+      if (!contropartiMap.has(nomeNormalizzato)) {
+        contropartiMap.set(nomeNormalizzato, {
+          nome: nomeOriginale,
+          nome_normalizzato: nomeNormalizzato,
+          transazioni: [],
+          totale_entrate: 0,
+          totale_uscite: 0,
+          count: 0,
+          riconciliate: 0
+        })
+      }
+      
+      const gruppo = contropartiMap.get(nomeNormalizzato)!
+      gruppo.transazioni.push(t)
+      gruppo.count++
+      
+      if (t.tipo === 'entrata') {
+        gruppo.totale_entrate += Math.abs(t.importo)
+      } else {
+        gruppo.totale_uscite += Math.abs(t.importo)
+      }
+      
+      if (t.stato_riconciliazione === 'riconciliata') {
+        gruppo.riconciliate++
+      }
+    }
+    
+    // Ordina transazioni all'interno di ogni gruppo per data desc
+    for (const gruppo of contropartiMap.values()) {
+      gruppo.transazioni.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime())
+    }
+    
+    // Converti in array e ordina per importo totale (entrate - uscite) desc
+    const controparti = Array.from(contropartiMap.values()).sort((a, b) => {
+      const saldoA = a.totale_entrate - a.totale_uscite
+      const saldoB = b.totale_entrate - b.totale_uscite
+      return Math.abs(saldoB) - Math.abs(saldoA)
+    })
+    
+    return NextResponse.json({ controparti })
+  }
   
   return NextResponse.json(result)
 }

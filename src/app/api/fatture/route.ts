@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
+import { normalizeSubject } from '@/lib/normalize'
 
 export const dynamic = 'force-dynamic'
+
+interface SoggettoGroup {
+  nome: string
+  nome_normalizzato: string
+  fatture: any[]
+  totale: number
+  count: number
+  riconciliate: number
+}
 
 export async function GET(request: NextRequest) {
   const supabase = createServerClient()
@@ -11,6 +21,7 @@ export async function GET(request: NextRequest) {
   const stato = searchParams.get('stato')
   const from = searchParams.get('from')
   const to = searchParams.get('to')
+  const grouped = searchParams.get('grouped') === 'true'
   
   // Query fatture
   let query = supabase
@@ -46,12 +57,58 @@ export async function GET(request: NextRequest) {
   }
   
   // Merge transazione into fatture (as array for consistency with UI)
-  const result = (fatture || []).map(f => ({
+  const fattureWithTransazioni = (fatture || []).map(f => ({
     ...f,
     transazione: f.transazione_id ? [transazioniMap.get(f.transazione_id)].filter(Boolean) : []
   }))
   
-  return NextResponse.json(result)
+  // Se grouped=true, raggruppa per soggetto
+  if (grouped) {
+    const soggettiMap = new Map<string, SoggettoGroup>()
+    
+    for (const fattura of fattureWithTransazioni) {
+      const nome = fattura.tipo === 'emessa' 
+        ? fattura.denominazione_cliente 
+        : fattura.denominazione_fornitore
+      
+      if (!nome) continue
+      
+      const nomeNorm = normalizeSubject(nome)
+      
+      if (!soggettiMap.has(nomeNorm)) {
+        soggettiMap.set(nomeNorm, {
+          nome: nome, // usa il primo nome trovato
+          nome_normalizzato: nomeNorm,
+          fatture: [],
+          totale: 0,
+          count: 0,
+          riconciliate: 0
+        })
+      }
+      
+      const group = soggettiMap.get(nomeNorm)!
+      group.fatture.push(fattura)
+      group.totale += fattura.totale
+      group.count += 1
+      if (fattura.stato_riconciliazione === 'riconciliata') {
+        group.riconciliate += 1
+      }
+    }
+    
+    // Ordina fatture dentro ogni gruppo per data desc
+    for (const group of soggettiMap.values()) {
+      group.fatture.sort((a, b) => 
+        new Date(b.data_emissione).getTime() - new Date(a.data_emissione).getTime()
+      )
+    }
+    
+    const soggetti = Array.from(soggettiMap.values())
+      .sort((a, b) => b.totale - a.totale) // default: ordina per importo desc
+    
+    return NextResponse.json({ soggetti })
+  }
+  
+  return NextResponse.json(fattureWithTransazioni)
 }
 
 export async function PATCH(request: NextRequest) {

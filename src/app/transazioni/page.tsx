@@ -2,9 +2,18 @@
 
 import { useEffect, useState, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
-import { X, Save } from 'lucide-react'
+import { X, Save, ExternalLink } from 'lucide-react'
+
+interface FatturaCollegata {
+  id: string
+  numero: string
+  data_emissione: string
+  totale: number
+  tipo: 'emessa' | 'ricevuta'
+}
 
 interface Transazione {
   id: string
@@ -17,6 +26,7 @@ interface Transazione {
   riferimento?: string
   stato_riconciliazione: string
   note?: string
+  fattura?: FatturaCollegata
 }
 
 function formatCurrency(amount: number): string {
@@ -76,7 +86,9 @@ function TransazioniContent() {
     }
   }, [highlightId, loading, transazioni])
 
-  const openEdit = (trans: Transazione) => {
+  const openEdit = (trans: Transazione, e: React.MouseEvent) => {
+    // Don't open edit if clicking on a link
+    if ((e.target as HTMLElement).closest('a')) return
     setEditingTrans(trans)
     setEditStato(trans.stato_riconciliazione)
     setEditNote(trans.note || '')
@@ -220,13 +232,14 @@ function TransazioniContent() {
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
             <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Data</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Conto</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Controparte</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap min-w-[200px]">Descrizione</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Importo</th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Stato</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap min-w-[150px]">Note</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Data</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Conto</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Controparte</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap min-w-[200px]">Descrizione</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Importo</th>
+                <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Stato</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">Fattura</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap min-w-[150px]">Note</th>
               </tr>
             </thead>
             <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
@@ -234,26 +247,40 @@ function TransazioniContent() {
                 <tr 
                   key={trans.id}
                   ref={(el) => { if (el) rowRefs.current.set(trans.id, el) }}
-                  onClick={() => openEdit(trans)}
+                  onClick={(e) => openEdit(trans, e)}
                   className={`hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-all ${
                     highlightId === trans.id 
                       ? 'bg-yellow-200 dark:bg-yellow-900 ring-2 ring-yellow-400 ring-inset' 
                       : ''
                   }`}
                 >
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{formatDate(trans.data)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{formatDate(trans.data)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
                     <span className={`px-2 py-1 text-xs font-medium rounded ${contoColors[trans.conto] || 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}>
                       {contoLabels[trans.conto] || trans.conto}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-sm text-gray-900 dark:text-white max-w-[200px] truncate" title={trans.controparte || ''}>{trans.controparte || '-'}</td>
-                  <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-[300px] truncate" title={trans.descrizione || ''}>{trans.descrizione || '-'}</td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold text-right ${trans.tipo === 'entrata' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                  <td className="px-4 py-3 text-sm text-gray-900 dark:text-white max-w-[200px] truncate" title={trans.controparte || ''}>{trans.controparte || '-'}</td>
+                  <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400 max-w-[300px] truncate" title={trans.descrizione || ''}>{trans.descrizione || '-'}</td>
+                  <td className={`px-4 py-3 whitespace-nowrap text-sm font-semibold text-right ${trans.tipo === 'entrata' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                     {trans.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(trans.importo))}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-center">{getStatoBadge(trans.stato_riconciliazione)}</td>
-                  <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-[200px]">
+                  <td className="px-4 py-3 whitespace-nowrap text-center">{getStatoBadge(trans.stato_riconciliazione)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-sm">
+                    {trans.fattura ? (
+                      <Link 
+                        href={`/fatture?id=${trans.fattura.id}`}
+                        className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span>{trans.fattura.numero}</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </Link>
+                    ) : (
+                      <span className="text-gray-400 dark:text-gray-500">-</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400 max-w-[200px]">
                     <span className="block truncate" title={trans.note || ''}>{trans.note || '-'}</span>
                   </td>
                 </tr>

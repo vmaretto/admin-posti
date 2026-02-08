@@ -78,8 +78,10 @@ export async function GET(request: NextRequest) {
       if (usedTransazioni.has(trans.id)) continue
       if (trans.tipo !== expectedTipo) continue
       
-      // Check amount match (within 1 cent)
-      const amountMatch = Math.abs(fattura.totale - trans.importo) < 0.02
+      // Check amount match (within 2% or 5 EUR)
+      const fatturaTotal = fattura.totale || (fattura.imponibile + fattura.imposta)
+      const tolerance = Math.max(fatturaTotal * 0.02, 5)
+      const amountMatch = Math.abs(fatturaTotal - trans.importo) <= tolerance
       
       if (!amountMatch) continue
       
@@ -95,7 +97,7 @@ export async function GET(request: NextRequest) {
         fattura: {
           id: fattura.id,
           numero: fattura.numero,
-          totale: fattura.totale,
+          totale: fatturaTotal,
           data: fattura.data_emissione,
           denominazione: fattura.tipo === 'emessa' ? fattura.denominazione_cliente : fattura.denominazione_fornitore
         },

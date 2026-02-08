@@ -48,10 +48,11 @@ export async function GET() {
     .from('transazioni')
     .select('*', { count: 'exact', head: true })
   
-  // Get ALL fatture stati (dynamic)
+  // Get ALL fatture stati (dynamic) - use range to get all
   const { data: allFatture } = await supabase
     .from('fatture')
     .select('stato_riconciliazione')
+    .range(0, 9999)
   
   const fattureStati: Record<string, number> = {}
   allFatture?.forEach(f => {
@@ -59,10 +60,11 @@ export async function GET() {
     fattureStati[stato] = (fattureStati[stato] || 0) + 1
   })
   
-  // Get ALL transazioni stati (dynamic)
+  // Get ALL transazioni stati (dynamic) - use range to get all
   const { data: allTransazioni } = await supabase
     .from('transazioni')
     .select('stato_riconciliazione')
+    .range(0, 9999)
   
   const transazioniStati: Record<string, number> = {}
   allTransazioni?.forEach(t => {

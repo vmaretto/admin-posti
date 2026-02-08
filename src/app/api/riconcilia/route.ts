@@ -3,6 +3,61 @@ import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
+// Normalize name for comparison
+function normalizeName(name: string | null | undefined): string {
+  if (!name) return ''
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '') // remove special chars
+    .replace(/\s+/g, ' ')        // normalize spaces
+    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|s\.r\.l|s\.p\.a)\b/g, '') // remove company suffixes
+    .trim()
+}
+
+// Extract keywords from name
+function extractKeywords(name: string): string[] {
+  const normalized = normalizeName(name)
+  return normalized.split(' ').filter(w => w.length > 2)
+}
+
+// Calculate similarity score between two names (0-100)
+function nameSimilarity(name1: string | null | undefined, name2: string | null | undefined): number {
+  const n1 = normalizeName(name1)
+  const n2 = normalizeName(name2)
+  
+  if (!n1 || !n2) return 0
+  
+  // Exact match
+  if (n1 === n2) return 100
+  
+  // One contains the other
+  if (n1.includes(n2) || n2.includes(n1)) return 80
+  
+  // Keyword matching
+  const kw1 = extractKeywords(name1 || '')
+  const kw2 = extractKeywords(name2 || '')
+  
+  if (kw1.length === 0 || kw2.length === 0) return 0
+  
+  let matches = 0
+  for (const k1 of kw1) {
+    for (const k2 of kw2) {
+      if (k1 === k2) {
+        matches++
+        break
+      }
+      // Partial match (one keyword contains another)
+      if (k1.length > 3 && k2.length > 3 && (k1.includes(k2) || k2.includes(k1))) {
+        matches += 0.5
+        break
+      }
+    }
+  }
+  
+  const maxKeywords = Math.max(kw1.length, kw2.length)
+  return Math.round((matches / maxKeywords) * 60) // Max 60 for keyword match
+}
+
 export async function POST(request: NextRequest) {
   const supabase = createServerClient()
   const { fatturaId, transazioneId } = await request.json()
@@ -46,6 +101,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const dryRun = searchParams.get('dryRun') === 'true'
   const toleranceDays = parseInt(searchParams.get('toleranceDays') || '30')
+  const minNameScore = parseInt(searchParams.get('minNameScore') || '20') // Minimum name similarity
   
   // Get unmatched fatture
   const { data: fatture, error: errF } = await supabase
@@ -67,57 +123,100 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: errT.message }, { status: 500 })
   }
   
-  const matches = []
-  const usedTransazioni = new Set<string>()
+  interface MatchCandidate {
+    fattura: typeof fatture[0]
+    trans: typeof transazioni[0]
+    fatturaTotal: number
+    daysDiff: number
+    nameScore: number
+    totalScore: number
+  }
   
+  const candidates: MatchCandidate[] = []
+  
+  // Find all potential matches with scores
   for (const fattura of fatture || []) {
-    // For emesse, look for entrate; for ricevute, look for uscite
     const expectedTipo = fattura.tipo === 'emessa' ? 'entrata' : 'uscita'
+    const fatturaTotal = fattura.totale || ((fattura.imponibile || 0) + (fattura.imposta || 0))
+    const fatturaDenom = fattura.tipo === 'emessa' ? fattura.denominazione_cliente : fattura.denominazione_fornitore
     
     for (const trans of transazioni || []) {
-      if (usedTransazioni.has(trans.id)) continue
       if (trans.tipo !== expectedTipo) continue
       
-      // Check amount match (within 2% or 5 EUR)
-      const fatturaTotal = fattura.totale || (fattura.imponibile + fattura.imposta)
+      // Amount check (within 2% or €5)
       const tolerance = Math.max(fatturaTotal * 0.02, 5)
-      const amountMatch = Math.abs(fatturaTotal - trans.importo) <= tolerance
+      const amountDiff = Math.abs(fatturaTotal - trans.importo)
+      if (amountDiff > tolerance) continue
       
-      if (!amountMatch) continue
-      
-      // Check date within tolerance
+      // Date check
       const fatturaDate = new Date(fattura.data_emissione)
       const transDate = new Date(trans.data)
       const daysDiff = Math.abs((transDate.getTime() - fatturaDate.getTime()) / (1000 * 60 * 60 * 24))
-      
       if (daysDiff > toleranceDays) continue
       
-      // Match found!
-      matches.push({
-        fattura: {
-          id: fattura.id,
-          numero: fattura.numero,
-          totale: fatturaTotal,
-          data: fattura.data_emissione,
-          denominazione: fattura.tipo === 'emessa' ? fattura.denominazione_cliente : fattura.denominazione_fornitore
-        },
-        transazione: {
-          id: trans.id,
-          importo: trans.importo,
-          data: trans.data,
-          controparte: trans.controparte,
-          conto: trans.conto
-        },
-        daysDiff: Math.round(daysDiff)
-      })
+      // Name similarity
+      const nameScore = nameSimilarity(fatturaDenom, trans.controparte)
       
-      usedTransazioni.add(trans.id)
-      break
+      // Skip if name similarity is too low (unless amount is exact match)
+      if (nameScore < minNameScore && amountDiff > 0.01) continue
+      
+      // Calculate total score (higher is better)
+      // - Name similarity: 0-100 (weight: 50%)
+      // - Date proximity: 0-100 based on days (weight: 25%)
+      // - Amount exactness: 0-100 based on diff (weight: 25%)
+      const dateScore = Math.max(0, 100 - (daysDiff * 3))
+      const amountScore = Math.max(0, 100 - (amountDiff / fatturaTotal * 100))
+      const totalScore = (nameScore * 0.5) + (dateScore * 0.25) + (amountScore * 0.25)
+      
+      candidates.push({
+        fattura,
+        trans,
+        fatturaTotal,
+        daysDiff: Math.round(daysDiff),
+        nameScore,
+        totalScore
+      })
     }
   }
   
+  // Sort by total score (best first)
+  candidates.sort((a, b) => b.totalScore - a.totalScore)
+  
+  // Select best non-conflicting matches
+  const matches = []
+  const usedFatture = new Set<string>()
+  const usedTrans = new Set<string>()
+  
+  for (const c of candidates) {
+    if (usedFatture.has(c.fattura.id) || usedTrans.has(c.trans.id)) continue
+    
+    usedFatture.add(c.fattura.id)
+    usedTrans.add(c.trans.id)
+    
+    const fatturaDenom = c.fattura.tipo === 'emessa' ? c.fattura.denominazione_cliente : c.fattura.denominazione_fornitore
+    
+    matches.push({
+      fattura: {
+        id: c.fattura.id,
+        numero: c.fattura.numero,
+        totale: c.fatturaTotal,
+        data: c.fattura.data_emissione,
+        denominazione: fatturaDenom
+      },
+      transazione: {
+        id: c.trans.id,
+        importo: c.trans.importo,
+        data: c.trans.data,
+        controparte: c.trans.controparte,
+        conto: c.trans.conto
+      },
+      daysDiff: c.daysDiff,
+      nameScore: c.nameScore,
+      totalScore: Math.round(c.totalScore)
+    })
+  }
+  
   if (!dryRun && matches.length > 0) {
-    // Apply matches
     for (const match of matches) {
       await supabase
         .from('fatture')

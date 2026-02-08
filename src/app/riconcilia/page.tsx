@@ -268,9 +268,18 @@ export default function RiconciliaPage() {
                     </div>
                   </div>
                 </div>
-                <div className="text-center mt-2 text-sm text-gray-500 ml-12">
-                  Differenza: {match.daysDiff} giorni | 
-                  Δ importo: {formatCurrency(Math.abs(match.fattura.totale - match.transazione.importo))}
+                <div className="text-center mt-2 text-sm text-gray-500 ml-12 flex justify-center gap-4 flex-wrap">
+                  <span>📅 {match.daysDiff} giorni</span>
+                  <span>💰 Δ{formatCurrency(Math.abs(match.fattura.totale - match.transazione.importo))}</span>
+                  <span className={`font-medium ${
+                    (match as any).nameScore >= 60 ? 'text-green-600' : 
+                    (match as any).nameScore >= 30 ? 'text-yellow-600' : 'text-red-600'
+                  }`}>
+                    🎯 Match nome: {(match as any).nameScore || 0}%
+                  </span>
+                  <span className="font-medium text-indigo-600">
+                    Score: {(match as any).totalScore || 0}
+                  </span>
                 </div>
               </div>
             ))}

@@ -21,28 +21,53 @@ function pdfToText(filePath) {
 
 // Parse amount with currency
 function parseAmount(text) {
-  // Common patterns: $123.45, €123,45, £75.00, USD 175.62, EUR 27.41
-  const patterns = [
-    /(?:TOTAL|Total|Amount|Subtotal|Due)[:\s]*[$€£]?\s*([\d,]+\.?\d*)\s*(USD|EUR|GBP)?/gi,
-    /[$€£]\s*([\d,]+\.?\d*)/g,
-    /(USD|EUR|GBP)\s*([\d,]+\.?\d*)/gi,
-    /([\d,]+\.?\d*)\s*(USD|EUR|GBP)/gi,
-  ];
-  
   let amounts = [];
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      let val = match[1] || match[2];
-      let currency = match[2] || match[1];
-      if (/^\d/.test(val)) {
-        const num = parseFloat(val.replace(',', ''));
-        if (num > 0 && num < 100000) {
-          amounts.push({ amount: num, currency: currency || 'EUR' });
-        }
-      }
+  
+  // Pattern 1: $20.00 USD or €25.00 EUR
+  const p1 = /[$€£]([\d,]+\.?\d*)\s*(USD|EUR|GBP)?/g;
+  let match;
+  while ((match = p1.exec(text)) !== null) {
+    const num = parseFloat(match[1].replace(',', ''));
+    let currency = match[2];
+    // Infer currency from symbol if not explicit
+    if (!currency) {
+      if (text.charAt(match.index) === '$') currency = 'USD';
+      else if (text.charAt(match.index) === '€') currency = 'EUR';
+      else if (text.charAt(match.index) === '£') currency = 'GBP';
+    }
+    if (num > 0 && num < 100000) {
+      amounts.push({ amount: num, currency: currency || 'EUR' });
     }
   }
+  
+  // Pattern 2: USD 175.62 or EUR 27.41
+  const p2 = /(USD|EUR|GBP)\s*([\d,]+\.?\d*)/gi;
+  while ((match = p2.exec(text)) !== null) {
+    const num = parseFloat(match[2].replace(',', ''));
+    if (num > 0 && num < 100000) {
+      amounts.push({ amount: num, currency: match[1].toUpperCase() });
+    }
+  }
+  
+  // Pattern 3: 175.62 USD or 27.41 EUR
+  const p3 = /([\d,]+\.?\d*)\s*(USD|EUR|GBP)/gi;
+  while ((match = p3.exec(text)) !== null) {
+    const num = parseFloat(match[1].replace(',', ''));
+    if (num > 0 && num < 100000) {
+      amounts.push({ amount: num, currency: match[2].toUpperCase() });
+    }
+  }
+  
+  // Deduplicate by amount and prefer entries with explicit currency
+  const seen = new Map();
+  for (const a of amounts) {
+    const key = a.amount;
+    if (!seen.has(key) || a.currency !== 'EUR') {
+      seen.set(key, a);
+    }
+  }
+  
+  amounts = Array.from(seen.values());
   
   // Return largest amount (usually the total)
   if (amounts.length > 0) {
@@ -148,17 +173,31 @@ async function main() {
         continue;
       }
       
+      // Exchange rates (approximate 2025 averages)
+      const exchangeRates = {
+        'USD': 0.92,  // 1 USD = 0.92 EUR
+        'GBP': 1.17,  // 1 GBP = 1.17 EUR
+        'EUR': 1.0
+      };
+      
+      const currency = amountInfo.currency?.toUpperCase() || 'EUR';
+      const rate = exchangeRates[currency] || 1.0;
+      const amountEur = Math.round(amountInfo.amount * rate * 100) / 100;
+      
       const fattura = {
         tipo: 'ricevuta',
         tipo_documento: 'fattura',
         numero: invoiceNum,
         data_emissione: date,
         denominazione_fornitore: vendor,
-        imponibile: amountInfo.amount,
+        imponibile: amountEur,  // Amount in EUR
         imposta: 0, // Foreign invoices usually don't have Italian VAT
+        // totale is computed automatically as imponibile + imposta
+        valuta: currency,
+        importo_originale: amountInfo.amount,  // Original amount in foreign currency
         stato_riconciliazione: 'da_riconciliare',
         fonte: 'estero',
-        note: `Valuta: ${amountInfo.currency}`
+        note: currency !== 'EUR' ? `Originale: ${currency} ${amountInfo.amount} (tasso: ${rate})` : null
       };
       
       console.log(`   ✓ ${invoiceNum} | ${date} | ${amountInfo.currency} ${amountInfo.amount}`);

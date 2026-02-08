@@ -162,12 +162,34 @@ export async function GET(request: NextRequest) {
       if (nameScore < minNameScore && amountDiff > 0.01) continue
       
       // Calculate total score (higher is better)
-      // - Name similarity: 0-100 (weight: 50%)
-      // - Date proximity: 0-100 based on days (weight: 25%)
+      // - Name similarity: 0-100 (weight: 40%)
+      // - Date proximity: 0-100 based on days (weight: 35%) - important signal
       // - Amount exactness: 0-100 based on diff (weight: 25%)
-      const dateScore = Math.max(0, 100 - (daysDiff * 3))
+      
+      // Date score: close dates are good, far dates are bad
+      // 0-7 days: 100-85, 7-14 days: 85-70, 14-30 days: 70-40, 30+ days: 40-0
+      let dateScore: number
+      if (daysDiff <= 7) {
+        dateScore = 100 - (daysDiff * 2)  // 100 to 86
+      } else if (daysDiff <= 14) {
+        dateScore = 86 - ((daysDiff - 7) * 2)  // 86 to 72
+      } else if (daysDiff <= 30) {
+        dateScore = 72 - ((daysDiff - 14) * 2)  // 72 to 40
+      } else {
+        dateScore = Math.max(0, 40 - ((daysDiff - 30) * 1.5))  // 40 to 0
+      }
+      
       const amountScore = Math.max(0, 100 - (amountDiff / fatturaTotal * 100))
-      const totalScore = (nameScore * 0.5) + (dateScore * 0.25) + (amountScore * 0.25)
+      
+      // Base score
+      let totalScore = (nameScore * 0.40) + (dateScore * 0.35) + (amountScore * 0.25)
+      
+      // Heavy penalty if name match is below 10%
+      if (nameScore < 10) {
+        totalScore = totalScore * 0.3  // 70% penalty
+      } else if (nameScore < 20) {
+        totalScore = totalScore * 0.6  // 40% penalty
+      }
       
       candidates.push({
         fattura,

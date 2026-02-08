@@ -59,16 +59,20 @@ export async function GET() {
         matchedKey = key
         break
       }
-      // Check keywords
-      const keyWords = key.split(' ').filter((w: string) => w.length > 3)
-      const contWords = controparte.split(' ').filter((w: string) => w.length > 3)
+      // Check keywords - require EXACT match of significant words (>4 chars)
+      const keyWords = key.split(' ').filter((w: string) => w.length > 4)
+      const contWords = controparte.split(' ').filter((w: string) => w.length > 4)
+      let matchCount = 0
       for (const kw of keyWords) {
-        if (contWords.some((cw: string) => cw.includes(kw) || kw.includes(cw))) {
-          matchedKey = key
-          break
+        if (contWords.some((cw: string) => cw === kw)) {
+          matchCount++
         }
       }
-      if (matchedKey) break
+      // Need at least 2 matching keywords or 1 if there's only 1 keyword
+      if (matchCount >= 2 || (keyWords.length === 1 && matchCount === 1)) {
+        matchedKey = key
+        break
+      }
     }
     
     if (matchedKey === '') {

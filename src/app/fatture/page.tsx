@@ -123,9 +123,9 @@ export default function FatturePage() {
       </div>
 
       {/* Filters */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6 flex gap-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-6 flex gap-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Tipo</label>
           <select 
             value={filtroTipo} 
             onChange={(e) => setFiltroTipo(e.target.value)}

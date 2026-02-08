@@ -22,11 +22,18 @@ export async function GET() {
     .select('id, numero, tipo, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente')
     .range(0, 9999)
   
-  // Get all transazioni
+  // Get all transazioni (only those linked to fatture)
   const { data: transazioni } = await supabase
     .from('transazioni')
-    .select('id, importo, tipo, data, conto, stato_riconciliazione, controparte')
+    .select('id, importo, tipo, data, conto, stato_riconciliazione, controparte, fattura_id')
+    .not('fattura_id', 'is', null)
     .range(0, 9999)
+  
+  // Build fattura_id -> fattura map
+  const fatturaMap = new Map<string, any>()
+  for (const f of fatture || []) {
+    fatturaMap.set(f.id, f)
+  }
   
   // Map: normalized name -> { original name, fatture, transazioni }
   const soggettiMap = new Map<string, {
@@ -35,7 +42,7 @@ export async function GET() {
     transazioni: any[]
   }>()
   
-  // Process fatture
+  // Process fatture - group by soggetto
   for (const f of fatture || []) {
     const denom = f.tipo === 'emessa' 
       ? f.denominazione_cliente 
@@ -64,52 +71,23 @@ export async function GET() {
     })
   }
   
-  // Process transazioni - match to subjects by normalized name
+  // Process transazioni - associate to soggetto via fattura_id
   for (const t of transazioni || []) {
-    if (!t.controparte) continue
+    if (!t.fattura_id) continue
     
-    const normalizedControparte = normalizeName(t.controparte)
-    if (!normalizedControparte) continue
+    const fattura = fatturaMap.get(t.fattura_id)
+    if (!fattura) continue
     
-    // Try exact normalized match first
-    let matchedKey = ''
+    const denom = fattura.tipo === 'emessa' 
+      ? fattura.denominazione_cliente 
+      : fattura.denominazione_fornitore
     
-    if (soggettiMap.has(normalizedControparte)) {
-      matchedKey = normalizedControparte
-    } else {
-      // Try partial match - only if the match is significant (>5 chars)
-      for (const key of soggettiMap.keys()) {
-        // Require that the contained string is at least 6 characters to avoid false positives
-        // like "ae" matching "officinae"
-        if (normalizedControparte.length >= 6 && key.includes(normalizedControparte)) {
-          matchedKey = key
-          break
-        }
-        if (key.length >= 6 && normalizedControparte.includes(key)) {
-          matchedKey = key
-          break
-        }
-        // Check if first significant word matches (must be >4 chars)
-        const keyWords = key.split(' ').filter(w => w.length > 4)
-        const contWords = normalizedControparte.split(' ').filter(w => w.length > 4)
-        if (keyWords.length > 0 && contWords.length > 0 && keyWords[0] === contWords[0]) {
-          matchedKey = key
-          break
-        }
-      }
-    }
+    if (!denom) continue
     
-    // If no match found, create new subject
-    if (!matchedKey) {
-      matchedKey = normalizedControparte
-      soggettiMap.set(matchedKey, {
-        originalName: t.controparte,
-        fatture: [],
-        transazioni: []
-      })
-    }
+    const normalizedKey = normalizeName(denom)
+    if (!normalizedKey || !soggettiMap.has(normalizedKey)) continue
     
-    soggettiMap.get(matchedKey)!.transazioni.push({
+    soggettiMap.get(normalizedKey)!.transazioni.push({
       id: t.id,
       importo: Math.abs(t.importo),
       tipo: t.tipo,

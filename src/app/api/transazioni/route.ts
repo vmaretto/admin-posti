@@ -49,6 +49,30 @@ export async function PATCH(request: NextRequest) {
   if (note !== undefined) updateData.note = note
   updateData.updated_at = new Date().toISOString()
   
+  // Se stato diventa "da_riconciliare", scollega anche la fattura
+  if (stato_riconciliazione === 'da_riconciliare') {
+    // Prima trova la fattura collegata per aggiornarla
+    const { data: trans } = await supabase
+      .from('transazioni')
+      .select('fattura_id')
+      .eq('id', id)
+      .single()
+    
+    if (trans?.fattura_id) {
+      // Aggiorna la fattura collegata
+      await supabase
+        .from('fatture')
+        .update({ 
+          stato_riconciliazione: 'da_riconciliare',
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', trans.fattura_id)
+    }
+    
+    // Scollega la fattura dalla transazione
+    updateData.fattura_id = null
+  }
+  
   const { error } = await supabase
     .from('transazioni')
     .update(updateData)

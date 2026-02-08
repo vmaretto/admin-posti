@@ -56,6 +56,18 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
   
+  // Se stato diventa "da_riconciliare", scollega le transazioni associate
+  if (stato_riconciliazione === 'da_riconciliare') {
+    await supabase
+      .from('transazioni')
+      .update({ 
+        fattura_id: null, 
+        stato_riconciliazione: 'da_riconciliare',
+        updated_at: new Date().toISOString() 
+      })
+      .eq('fattura_id', id)
+  }
+  
   return NextResponse.json({ success: true })
 }
 

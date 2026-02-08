@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   
   let query = supabase
     .from('fatture')
-    .select('*')
+    .select('*, transazione:transazioni(id, data, importo, conto, controparte)')
     .order('data_emissione', { ascending: false })
   
   if (tipo) query = query.eq('tipo', tipo)

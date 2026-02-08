@@ -3,15 +3,37 @@ import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
+// Common acronym expansions
+const acronyms: Record<string, string[]> = {
+  'aws': ['amazon', 'amazon web services'],
+  'ms': ['microsoft'],
+  'gcp': ['google', 'google cloud'],
+  'ibm': ['international business machines'],
+}
+
 // Normalize name for comparison
 function normalizeName(name: string | null | undefined): string {
   if (!name) return ''
-  return name
+  let n = name
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, '') // remove special chars
     .replace(/\s+/g, ' ')        // normalize spaces
-    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|s\.r\.l|s\.p\.a)\b/g, '') // remove company suffixes
+    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|sarl|emea|s\.r\.l|s\.p\.a)\b/g, '') // remove company suffixes
     .trim()
+  
+  // Expand acronyms for matching
+  for (const [acronym, expansions] of Object.entries(acronyms)) {
+    if (n.includes(acronym)) {
+      for (const exp of expansions) {
+        if (n.includes(exp.split(' ')[0])) {
+          // Already has expansion, normalize to acronym
+          n = n.replace(new RegExp(exp, 'g'), acronym)
+        }
+      }
+    }
+  }
+  
+  return n
 }
 
 // Extract keywords from name
@@ -32,6 +54,13 @@ function nameSimilarity(name1: string | null | undefined, name2: string | null |
   
   // One contains the other
   if (n1.includes(n2) || n2.includes(n1)) return 80
+  
+  // Check acronym matches (AWS ↔ Amazon)
+  for (const [acronym, expansions] of Object.entries(acronyms)) {
+    const has1 = n1.includes(acronym) || expansions.some(e => n1.includes(e.split(' ')[0]))
+    const has2 = n2.includes(acronym) || expansions.some(e => n2.includes(e.split(' ')[0]))
+    if (has1 && has2) return 90  // Strong match via acronym
+  }
   
   // Keyword matching
   const kw1 = extractKeywords(name1 || '')
@@ -184,12 +213,11 @@ export async function GET(request: NextRequest) {
       // Base score
       let totalScore = (nameScore * 0.40) + (dateScore * 0.35) + (amountScore * 0.25)
       
-      // Heavy penalty if name match is below 10%
+      // Heavy penalty ONLY if name match is below 10%
       if (nameScore < 10) {
-        totalScore = totalScore * 0.3  // 70% penalty
-      } else if (nameScore < 20) {
-        totalScore = totalScore * 0.6  // 40% penalty
+        totalScore = totalScore * 0.4  // 60% penalty for very low name match
       }
+      // No penalty for 10-20% - date and amount can compensate
       
       candidates.push({
         fattura,

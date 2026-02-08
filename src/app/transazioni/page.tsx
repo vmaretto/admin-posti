@@ -51,13 +51,15 @@ function TransazioniContent() {
   const [filtroTipo, setFiltroTipo] = useState<string>('')
   const [filtroStato, setFiltroStato] = useState<string>('')
   
-  // Scroll to highlighted row
+  // Scroll to highlighted row (with delay for refs to be ready)
   useEffect(() => {
     if (highlightId && !loading && transazioni.length > 0) {
-      const row = rowRefs.current.get(highlightId)
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
+      setTimeout(() => {
+        const row = rowRefs.current.get(highlightId)
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+      }, 100)
     }
   }, [highlightId, loading, transazioni])
 

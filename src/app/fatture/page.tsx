@@ -43,13 +43,15 @@ function FattureContent() {
   const [editNote, setEditNote] = useState<string>('')
   const [saving, setSaving] = useState(false)
   
-  // Scroll to highlighted row
+  // Scroll to highlighted row (with delay for refs to be ready)
   useEffect(() => {
     if (highlightId && !loading && fatture.length > 0) {
-      const row = rowRefs.current.get(highlightId)
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
+      setTimeout(() => {
+        const row = rowRefs.current.get(highlightId)
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+      }, 100)
     }
   }, [highlightId, loading, fatture])
 

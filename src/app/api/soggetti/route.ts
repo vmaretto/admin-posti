@@ -77,15 +77,21 @@ export async function GET() {
     if (soggettiMap.has(normalizedControparte)) {
       matchedKey = normalizedControparte
     } else {
-      // Try partial match - if normalized controparte contains or is contained by any key
+      // Try partial match - only if the match is significant (>5 chars)
       for (const key of soggettiMap.keys()) {
-        if (normalizedControparte.includes(key) || key.includes(normalizedControparte)) {
+        // Require that the contained string is at least 6 characters to avoid false positives
+        // like "ae" matching "officinae"
+        if (normalizedControparte.length >= 6 && key.includes(normalizedControparte)) {
           matchedKey = key
           break
         }
-        // Check if first significant word matches
-        const keyWords = key.split(' ').filter(w => w.length > 3)
-        const contWords = normalizedControparte.split(' ').filter(w => w.length > 3)
+        if (key.length >= 6 && normalizedControparte.includes(key)) {
+          matchedKey = key
+          break
+        }
+        // Check if first significant word matches (must be >4 chars)
+        const keyWords = key.split(' ').filter(w => w.length > 4)
+        const contWords = normalizedControparte.split(' ').filter(w => w.length > 4)
         if (keyWords.length > 0 && contWords.length > 0 && keyWords[0] === contWords[0]) {
           matchedKey = key
           break

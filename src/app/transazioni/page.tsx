@@ -73,16 +73,29 @@ function TransazioniContent() {
   const [editStato, setEditStato] = useState<string>('')
   const [editNote, setEditNote] = useState<string>('')
   const [saving, setSaving] = useState(false)
+  const [notFound, setNotFound] = useState(false)
   
-  // Scroll to highlighted row
+  // Scroll to highlighted row (with longer delay for large lists)
   useEffect(() => {
     if (highlightId && !loading && transazioni.length > 0) {
-      setTimeout(() => {
-        const row = rowRefs.current.get(highlightId)
-        if (row) {
-          row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        }
-      }, 100)
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const row = rowRefs.current.get(highlightId)
+          if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Flash effect
+            row.classList.add('ring-4', 'ring-yellow-400')
+            setTimeout(() => row.classList.remove('ring-4', 'ring-yellow-400'), 2000)
+          } else {
+            // If row not found in current view, the transaction might be filtered out
+            const found = transazioni.find(t => t.id === highlightId)
+            if (!found) {
+              setNotFound(true)
+            }
+          }
+        }, 300)
+      })
     }
   }, [highlightId, loading, transazioni])
 
@@ -221,6 +234,13 @@ function TransazioniContent() {
           </select>
         </div>
       </div>
+
+      {/* Not found warning */}
+      {notFound && highlightId && (
+        <div className="bg-yellow-100 dark:bg-yellow-900 border border-yellow-400 text-yellow-800 dark:text-yellow-200 px-4 py-3 rounded mb-4">
+          ⚠️ Transazione non trovata nei risultati attuali. Prova a rimuovere i filtri.
+        </div>
+      )}
 
       {/* Table with horizontal scroll */}
       {loading ? (

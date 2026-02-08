@@ -3,90 +3,35 @@ import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
-// Common acronym expansions
-const acronyms: Record<string, string[]> = {
-  'aws': ['amazon', 'amazon web services'],
-  'ms': ['microsoft'],
-  'gcp': ['google', 'google cloud'],
-  'ibm': ['international business machines'],
-}
-
 // Normalize name for comparison
 function normalizeName(name: string | null | undefined): string {
   if (!name) return ''
-  let n = name
+  return name
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '') // remove special chars
-    .replace(/\s+/g, ' ')        // normalize spaces
-    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|sarl|emea|s\.r\.l|s\.p\.a)\b/g, '') // remove company suffixes
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|sarl|emea|s r l|s p a)\b/g, '')
     .trim()
-  
-  // Expand acronyms for matching
-  for (const [acronym, expansions] of Object.entries(acronyms)) {
-    if (n.includes(acronym)) {
-      for (const exp of expansions) {
-        if (n.includes(exp.split(' ')[0])) {
-          // Already has expansion, normalize to acronym
-          n = n.replace(new RegExp(exp, 'g'), acronym)
-        }
-      }
-    }
-  }
-  
-  return n
 }
 
-// Extract keywords from name
-function extractKeywords(name: string): string[] {
-  const normalized = normalizeName(name)
-  return normalized.split(' ').filter(w => w.length > 2)
-}
-
-// Calculate similarity score between two names (0-100)
-function nameSimilarity(name1: string | null | undefined, name2: string | null | undefined): number {
+// Check if names match (normalized comparison)
+function namesMatch(name1: string | null | undefined, name2: string | null | undefined): boolean {
   const n1 = normalizeName(name1)
   const n2 = normalizeName(name2)
   
-  if (!n1 || !n2) return 0
+  if (!n1 || !n2) return false
+  if (n1 === n2) return true
+  if (n1.includes(n2) || n2.includes(n1)) return true
   
-  // Exact match
-  if (n1 === n2) return 100
+  // Check first significant word
+  const words1 = n1.split(' ').filter(w => w.length > 3)
+  const words2 = n2.split(' ').filter(w => w.length > 3)
+  if (words1.length > 0 && words2.length > 0 && words1[0] === words2[0]) return true
   
-  // One contains the other
-  if (n1.includes(n2) || n2.includes(n1)) return 80
-  
-  // Check acronym matches (AWS ↔ Amazon)
-  for (const [acronym, expansions] of Object.entries(acronyms)) {
-    const has1 = n1.includes(acronym) || expansions.some(e => n1.includes(e.split(' ')[0]))
-    const has2 = n2.includes(acronym) || expansions.some(e => n2.includes(e.split(' ')[0]))
-    if (has1 && has2) return 90  // Strong match via acronym
-  }
-  
-  // Keyword matching
-  const kw1 = extractKeywords(name1 || '')
-  const kw2 = extractKeywords(name2 || '')
-  
-  if (kw1.length === 0 || kw2.length === 0) return 0
-  
-  let matches = 0
-  for (const k1 of kw1) {
-    for (const k2 of kw2) {
-      if (k1 === k2) {
-        matches++
-        break
-      }
-      // Partial match (one keyword contains another)
-      if (k1.length > 3 && k2.length > 3 && (k1.includes(k2) || k2.includes(k1))) {
-        matches += 0.5
-        break
-      }
-    }
-  }
-  
-  const maxKeywords = Math.max(kw1.length, kw2.length)
-  return Math.round((matches / maxKeywords) * 60) // Max 60 for keyword match
+  return false
 }
 
+// POST: Collega una fattura a una transazione
 export async function POST(request: NextRequest) {
   const supabase = createServerClient()
   const { fatturaId, transazioneId } = await request.json()
@@ -95,266 +40,216 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Missing fatturaId or transazioneId' }, { status: 400 })
   }
   
-  // N:1: collega la fattura alla transazione via transazione_id
-  // Più fatture possono avere lo stesso transazione_id
-  const { error: errFattura } = await supabase
-    .from('fatture')
-    .update({ 
-      transazione_id: transazioneId,
-      stato_riconciliazione: 'riconciliata'
-    })
-    .eq('id', fatturaId)
+  // Inserisci in tabella riconciliazioni (N:1 supportato)
+  const { error: errRic } = await supabase
+    .from('riconciliazioni')
+    .upsert({ 
+      fattura_id: fatturaId,
+      transazione_id: transazioneId 
+    }, { onConflict: 'fattura_id' })
   
-  if (errFattura) {
-    return NextResponse.json({ error: errFattura.message }, { status: 500 })
+  if (errRic) {
+    return NextResponse.json({ error: errRic.message }, { status: 500 })
   }
   
-  // Marca la transazione come riconciliata (senza fattura_id - deprecato)
-  const { error: errTrans } = await supabase
+  // Aggiorna stato fattura
+  await supabase
+    .from('fatture')
+    .update({ stato_riconciliazione: 'riconciliata' })
+    .eq('id', fatturaId)
+  
+  // Aggiorna stato transazione
+  await supabase
     .from('transazioni')
-    .update({ 
-      stato_riconciliazione: 'riconciliata'
-    })
+    .update({ stato_riconciliazione: 'riconciliata' })
     .eq('id', transazioneId)
   
-  if (errTrans) {
-    return NextResponse.json({ error: errTrans.message }, { status: 500 })
+  return NextResponse.json({ success: true })
+}
+
+// DELETE: Scollega una riconciliazione
+export async function DELETE(request: NextRequest) {
+  const supabase = createServerClient()
+  const { searchParams } = new URL(request.url)
+  const fatturaId = searchParams.get('fatturaId')
+  
+  if (!fatturaId) {
+    return NextResponse.json({ error: 'Missing fatturaId' }, { status: 400 })
+  }
+  
+  // Trova la transazione collegata
+  const { data: ric } = await supabase
+    .from('riconciliazioni')
+    .select('transazione_id')
+    .eq('fattura_id', fatturaId)
+    .single()
+  
+  // Rimuovi il collegamento
+  await supabase
+    .from('riconciliazioni')
+    .delete()
+    .eq('fattura_id', fatturaId)
+  
+  // Aggiorna stato fattura
+  await supabase
+    .from('fatture')
+    .update({ stato_riconciliazione: 'da_riconciliare' })
+    .eq('id', fatturaId)
+  
+  // Se la transazione non ha più fatture collegate, mettila da_riconciliare
+  if (ric?.transazione_id) {
+    const { count } = await supabase
+      .from('riconciliazioni')
+      .select('*', { count: 'exact', head: true })
+      .eq('transazione_id', ric.transazione_id)
+    
+    if (count === 0) {
+      await supabase
+        .from('transazioni')
+        .update({ stato_riconciliazione: 'da_riconciliare' })
+        .eq('id', ric.transazione_id)
+    }
   }
   
   return NextResponse.json({ success: true })
 }
 
-// Auto-match endpoint
+// GET: Trova suggerimenti di match per una fattura
 export async function GET(request: NextRequest) {
   const supabase = createServerClient()
   const { searchParams } = new URL(request.url)
-  const dryRun = searchParams.get('dryRun') === 'true'
-  const autoApplyPerfect = searchParams.get('autoApplyPerfect') !== 'false' // Auto-apply 100% matches by default
-  const toleranceDays = parseInt(searchParams.get('toleranceDays') || '30')
-  const minNameScore = parseInt(searchParams.get('minNameScore') || '0') // No minimum by default - show all candidates
+  const fatturaId = searchParams.get('fatturaId')
+  const toleranceDays = parseInt(searchParams.get('toleranceDays') || '100')
   
-  // Get unmatched fatture (increase range to get all)
-  const { data: fatture, error: errF } = await supabase
+  // Se fatturaId specificato, trova suggerimenti per quella fattura
+  if (fatturaId) {
+    // Prendi la fattura
+    const { data: fattura } = await supabase
+      .from('fatture')
+      .select('*')
+      .eq('id', fatturaId)
+      .single()
+    
+    if (!fattura) {
+      return NextResponse.json({ error: 'Fattura not found' }, { status: 404 })
+    }
+    
+    const expectedTipo = fattura.tipo === 'emessa' ? 'entrata' : 'uscita'
+    const fatturaTotal = fattura.totale || ((fattura.imponibile || 0) + (fattura.imposta || 0))
+    const fatturaDenom = fattura.tipo === 'emessa' ? fattura.denominazione_cliente : fattura.denominazione_fornitore
+    const fatturaDate = new Date(fattura.data_emissione)
+    
+    // Prendi transazioni da_riconciliare del tipo giusto
+    const { data: transazioni } = await supabase
+      .from('transazioni')
+      .select('*')
+      .eq('tipo', expectedTipo)
+      .eq('stato_riconciliazione', 'da_riconciliare')
+      .range(0, 9999)
+    
+    const suggestions = []
+    
+    for (const trans of transazioni || []) {
+      // Verifica soggetto (DEVE corrispondere)
+      if (!namesMatch(fatturaDenom, trans.controparte)) continue
+      
+      // Verifica importo (2% o min 5€)
+      const tolerance = Math.max(fatturaTotal * 0.02, 5)
+      const amountDiff = Math.abs(fatturaTotal - trans.importo)
+      if (amountDiff > tolerance) continue
+      
+      // Verifica data (max toleranceDays)
+      const transDate = new Date(trans.data)
+      const daysDiff = Math.abs((transDate.getTime() - fatturaDate.getTime()) / (1000 * 60 * 60 * 24))
+      if (daysDiff > toleranceDays) continue
+      
+      suggestions.push({
+        id: trans.id,
+        data: trans.data,
+        importo: trans.importo,
+        controparte: trans.controparte,
+        conto: trans.conto,
+        daysDiff: Math.round(daysDiff),
+        amountDiff: Math.round(amountDiff * 100) / 100
+      })
+    }
+    
+    // Ordina per vicinanza di data
+    suggestions.sort((a, b) => a.daysDiff - b.daysDiff)
+    
+    return NextResponse.json({ 
+      fattura: {
+        id: fattura.id,
+        numero: fattura.numero,
+        totale: fatturaTotal,
+        data: fattura.data_emissione,
+        denominazione: fatturaDenom,
+        tipo: fattura.tipo
+      },
+      suggestions 
+    })
+  }
+  
+  // Se nessun fatturaId, ritorna lista fatture da riconciliare con conteggio suggerimenti
+  const { data: fatture } = await supabase
     .from('fatture')
     .select('*')
     .eq('stato_riconciliazione', 'da_riconciliare')
+    .order('data_emissione', { ascending: false })
     .range(0, 9999)
   
-  if (errF) {
-    return NextResponse.json({ error: errF.message }, { status: 500 })
-  }
-  
-  // Get unmatched transazioni (increase range to get all)
-  const { data: transazioni, error: errT } = await supabase
+  const { data: transazioni } = await supabase
     .from('transazioni')
     .select('*')
     .eq('stato_riconciliazione', 'da_riconciliare')
     .range(0, 9999)
   
-  if (errT) {
-    return NextResponse.json({ error: errT.message }, { status: 500 })
-  }
+  const result = []
   
-  interface MatchCandidate {
-    fattura: typeof fatture[0]
-    trans: typeof transazioni[0]
-    fatturaTotal: number
-    daysDiff: number
-    nameScore: number
-    totalScore: number
-  }
-  
-  const candidates: MatchCandidate[] = []
-  
-  // Find all potential matches with scores
   for (const fattura of fatture || []) {
     const expectedTipo = fattura.tipo === 'emessa' ? 'entrata' : 'uscita'
     const fatturaTotal = fattura.totale || ((fattura.imponibile || 0) + (fattura.imposta || 0))
     const fatturaDenom = fattura.tipo === 'emessa' ? fattura.denominazione_cliente : fattura.denominazione_fornitore
+    const fatturaDate = new Date(fattura.data_emissione)
+    
+    let suggestionCount = 0
     
     for (const trans of transazioni || []) {
       if (trans.tipo !== expectedTipo) continue
+      if (!namesMatch(fatturaDenom, trans.controparte)) continue
       
-      // Amount check (within 2% or €5)
       const tolerance = Math.max(fatturaTotal * 0.02, 5)
       const amountDiff = Math.abs(fatturaTotal - trans.importo)
       if (amountDiff > tolerance) continue
       
-      // Date check
-      const fatturaDate = new Date(fattura.data_emissione)
       const transDate = new Date(trans.data)
       const daysDiff = Math.abs((transDate.getTime() - fatturaDate.getTime()) / (1000 * 60 * 60 * 24))
       if (daysDiff > toleranceDays) continue
       
-      // Name similarity
-      const nameScore = nameSimilarity(fatturaDenom, trans.controparte)
-      
-      // Skip if name similarity is 0% - no point showing these
-      if (nameScore === 0) continue
-      
-      // Skip if name similarity is too low (unless amount is exact match)
-      if (nameScore < minNameScore && amountDiff > 0.01) continue
-      
-      // Calculate total score (higher is better)
-      // - Name similarity: 0-100 (weight: 40%)
-      // - Date proximity: 0-100 based on days (weight: 35%) - important signal
-      // - Amount exactness: 0-100 based on diff (weight: 25%)
-      
-      // Date score: close dates are good, far dates are bad
-      // 0-7 days: 100-85, 7-14 days: 85-70, 14-30 days: 70-40, 30+ days: 40-0
-      let dateScore: number
-      if (daysDiff <= 7) {
-        dateScore = 100 - (daysDiff * 2)  // 100 to 86
-      } else if (daysDiff <= 14) {
-        dateScore = 86 - ((daysDiff - 7) * 2)  // 86 to 72
-      } else if (daysDiff <= 30) {
-        dateScore = 72 - ((daysDiff - 14) * 2)  // 72 to 40
-      } else {
-        dateScore = Math.max(0, 40 - ((daysDiff - 30) * 1.5))  // 40 to 0
-      }
-      
-      const amountScore = Math.max(0, 100 - (amountDiff / fatturaTotal * 100))
-      
-      // Base score
-      let totalScore = (nameScore * 0.40) + (dateScore * 0.35) + (amountScore * 0.25)
-      
-      // Heavy penalty ONLY if name match is below 10%
-      if (nameScore < 10) {
-        totalScore = totalScore * 0.4  // 60% penalty for very low name match
-      }
-      // No penalty for 10-20% - date and amount can compensate
-      
-      candidates.push({
-        fattura,
-        trans,
-        fatturaTotal,
-        daysDiff: Math.round(daysDiff),
-        nameScore,
-        totalScore
-      })
+      suggestionCount++
     }
-  }
-  
-  // Sort by total score (best first)
-  candidates.sort((a, b) => b.totalScore - a.totalScore)
-  
-  // Select best non-conflicting matches
-  const matches = []
-  const usedFatture = new Set<string>()
-  const usedTrans = new Set<string>()
-  
-  for (const c of candidates) {
-    if (usedFatture.has(c.fattura.id) || usedTrans.has(c.trans.id)) continue
     
-    usedFatture.add(c.fattura.id)
-    usedTrans.add(c.trans.id)
-    
-    const fatturaDenom = c.fattura.tipo === 'emessa' ? c.fattura.denominazione_cliente : c.fattura.denominazione_fornitore
-    
-    matches.push({
-      fattura: {
-        id: c.fattura.id,
-        numero: c.fattura.numero,
-        totale: c.fatturaTotal,
-        data: c.fattura.data_emissione,
-        denominazione: fatturaDenom
-      },
-      transazione: {
-        id: c.trans.id,
-        importo: c.trans.importo,
-        data: c.trans.data,
-        controparte: c.trans.controparte,
-        conto: c.trans.conto
-      },
-      daysDiff: c.daysDiff,
-      nameScore: c.nameScore,
-      totalScore: Math.round(c.totalScore)
+    result.push({
+      id: fattura.id,
+      numero: fattura.numero,
+      totale: fatturaTotal,
+      data: fattura.data_emissione,
+      denominazione: fatturaDenom,
+      tipo: fattura.tipo,
+      suggestionCount
     })
   }
   
-  // Separate perfect matches (100% name score) from others
-  const perfectMatches = matches.filter(m => m.nameScore === 100)
-  const manualMatches = matches.filter(m => m.nameScore < 100)
-  
-  let autoApplied = 0
-  
-  // Auto-apply perfect matches if enabled and in dryRun mode
-  // N:1: setta solo transazione_id sulla fattura, non fattura_id sulla transazione
-  if (autoApplyPerfect && dryRun && perfectMatches.length > 0) {
-    for (const match of perfectMatches) {
-      await supabase
-        .from('fatture')
-        .update({ 
-          transazione_id: match.transazione.id,
-          stato_riconciliazione: 'riconciliata'
-        })
-        .eq('id', match.fattura.id)
-      
-      await supabase
-        .from('transazioni')
-        .update({ 
-          stato_riconciliazione: 'riconciliata'
-        })
-        .eq('id', match.transazione.id)
-      
-      autoApplied++
-    }
-  }
-  
-  // Apply all matches if not dryRun
-  // N:1: setta solo transazione_id sulla fattura, non fattura_id sulla transazione
-  if (!dryRun && matches.length > 0) {
-    for (const match of matches) {
-      await supabase
-        .from('fatture')
-        .update({ 
-          transazione_id: match.transazione.id,
-          stato_riconciliazione: 'riconciliata'
-        })
-        .eq('id', match.fattura.id)
-      
-      await supabase
-        .from('transazioni')
-        .update({ 
-          stato_riconciliazione: 'riconciliata'
-        })
-        .eq('id', match.transazione.id)
-    }
-  }
-  
-  // Find orphans: fatture without any match candidate
-  const fattureWithMatch = new Set(candidates.map(c => c.fattura.id))
-  const orphanFatture = (fatture || [])
-    .filter(f => !fattureWithMatch.has(f.id))
-    .map(f => ({
-      id: f.id,
-      numero: f.numero,
-      totale: f.totale || ((f.imponibile || 0) + (f.imposta || 0)),
-      data: f.data_emissione,
-      denominazione: f.tipo === 'emessa' ? f.denominazione_cliente : f.denominazione_fornitore,
-      tipo: f.tipo
-    }))
-  
-  // Find orphans: transazioni without any match candidate
-  const transWithMatch = new Set(candidates.map(c => c.trans.id))
-  const orphanTransazioni = (transazioni || [])
-    .filter(t => !transWithMatch.has(t.id))
-    .map(t => ({
-      id: t.id,
-      importo: t.importo,
-      data: t.data,
-      controparte: t.controparte,
-      conto: t.conto,
-      tipo: t.tipo
-    }))
+  // Ordina: prima quelle con suggerimenti, poi per data
+  result.sort((a, b) => {
+    if (a.suggestionCount > 0 && b.suggestionCount === 0) return -1
+    if (a.suggestionCount === 0 && b.suggestionCount > 0) return 1
+    return new Date(b.data).getTime() - new Date(a.data).getTime()
+  })
   
   return NextResponse.json({ 
-    matches: dryRun ? manualMatches : matches, // In dryRun, return only non-perfect for manual review
-    perfectMatches: dryRun ? perfectMatches : [],
-    orphanFatture,      // Fatture senza nessun match possibile
-    orphanTransazioni,  // Transazioni senza nessun match possibile
-    count: matches.length,
-    autoApplied,
-    dryRun
+    fatture: result,
+    total: result.length,
+    withSuggestions: result.filter(f => f.suggestionCount > 0).length
   })
 }

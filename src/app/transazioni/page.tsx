@@ -26,7 +26,7 @@ interface Transazione {
   riferimento?: string
   stato_riconciliazione: string
   note?: string
-  fattura?: FatturaCollegata
+  fatture?: FatturaCollegata[]  // N:1: più fatture possono essere collegate
 }
 
 function formatCurrency(amount: number): string {
@@ -286,16 +286,24 @@ function TransazioniContent() {
                     {trans.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(trans.importo))}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-center">{getStatoBadge(trans.stato_riconciliazione)}</td>
-                  <td className="px-4 py-3 whitespace-nowrap text-sm">
-                    {trans.fattura ? (
-                      <Link 
-                        href={`/fatture?id=${trans.fattura.id}`}
-                        className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <span>{trans.fattura.numero}</span>
-                        <ExternalLink className="h-3 w-3" />
-                      </Link>
+                  <td className="px-4 py-3 text-sm">
+                    {trans.fatture && trans.fatture.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {trans.fatture.map((f, idx) => (
+                          <Link 
+                            key={f.id}
+                            href={`/fatture?id=${f.id}`}
+                            className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline text-xs bg-indigo-50 dark:bg-indigo-900/30 px-1.5 py-0.5 rounded"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <span>{f.numero}</span>
+                            <ExternalLink className="h-3 w-3" />
+                          </Link>
+                        ))}
+                        {trans.fatture.length > 1 && (
+                          <span className="text-xs text-gray-500 dark:text-gray-400">({trans.fatture.length})</span>
+                        )}
+                      </div>
                     ) : (
                       <span className="text-gray-400 dark:text-gray-500">-</span>
                     )}

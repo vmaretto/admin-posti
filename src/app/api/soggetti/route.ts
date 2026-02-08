@@ -16,10 +16,10 @@ function normalizeName(name: string | null): string {
 export async function GET() {
   const supabase = createServerClient()
   
-  // Get all fatture
+  // Get all fatture (include transazione_id for N:1 mapping)
   const { data: fatture } = await supabase
     .from('fatture')
-    .select('id, numero, tipo, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente')
+    .select('id, numero, tipo, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente, transazione_id')
     .range(0, 9999)
   
   // Get all transazioni
@@ -70,20 +70,30 @@ export async function GET() {
     })
   }
   
+  // Build transazione -> fatture map (N:1: una transazione può avere più fatture)
+  const transazioneToFatture = new Map<string, any[]>()
+  for (const f of fatture || []) {
+    if (f.transazione_id) {
+      if (!transazioneToFatture.has(f.transazione_id)) {
+        transazioneToFatture.set(f.transazione_id, [])
+      }
+      transazioneToFatture.get(f.transazione_id)!.push(f)
+    }
+  }
+  
   // Process transazioni
   for (const t of transazioni || []) {
     let normalizedKey = ''
     
-    // 1. Se riconciliata, usa il soggetto della fattura collegata
-    if (t.fattura_id) {
-      const fattura = fatturaMap.get(t.fattura_id)
-      if (fattura) {
-        const denom = fattura.tipo === 'emessa' 
-          ? fattura.denominazione_cliente 
-          : fattura.denominazione_fornitore
-        if (denom) {
-          normalizedKey = normalizeName(denom)
-        }
+    // 1. Se riconciliata, usa il soggetto dalle fatture collegate (via transazione_id)
+    const fattureCollegate = transazioneToFatture.get(t.id) || []
+    if (fattureCollegate.length > 0) {
+      const fattura = fattureCollegate[0] // Usa la prima fattura per determinare il soggetto
+      const denom = fattura.tipo === 'emessa' 
+        ? fattura.denominazione_cliente 
+        : fattura.denominazione_fornitore
+      if (denom) {
+        normalizedKey = normalizeName(denom)
       }
     }
     
@@ -105,7 +115,7 @@ export async function GET() {
         data: t.data,
         conto: t.conto,
         stato: t.stato_riconciliazione,
-        fattura_id: t.fattura_id || null
+        fatture_ids: fattureCollegate.map(f => f.id) // N:1: array di fatture collegate
       })
     }
   }

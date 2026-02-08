@@ -13,9 +13,10 @@ export async function GET(request: NextRequest) {
   const from = searchParams.get('from')
   const to = searchParams.get('to')
   
+  // N:1 - una transazione può avere più fatture collegate via fatture.transazione_id
   let query = supabase
     .from('transazioni')
-    .select('*, fattura:fatture(id, numero, data_emissione, totale, imponibile, imposta, tipo)')
+    .select('*, fatture:fatture!transazione_id(id, numero, data_emissione, totale, imponibile, imposta, tipo)')
     .order('data', { ascending: false })
     .range(0, 9999)
   
@@ -49,27 +50,30 @@ export async function PATCH(request: NextRequest) {
   if (note !== undefined) updateData.note = note
   updateData.updated_at = new Date().toISOString()
   
-  // Se stato diventa "da_riconciliare", scollega anche la fattura
+  // Se stato diventa "da_riconciliare", scollega TUTTE le fatture collegate (N:1)
   if (stato_riconciliazione === 'da_riconciliare') {
-    // Prima trova la fattura collegata per aggiornarla
-    const { data: trans } = await supabase
-      .from('transazioni')
-      .select('fattura_id')
-      .eq('id', id)
-      .single()
+    // Trova tutte le fatture collegate a questa transazione via transazione_id
+    const { data: fattureCollegate } = await supabase
+      .from('fatture')
+      .select('id')
+      .eq('transazione_id', id)
+      .range(0, 9999)
     
-    if (trans?.fattura_id) {
-      // Aggiorna la fattura collegata
-      await supabase
-        .from('fatture')
-        .update({ 
-          stato_riconciliazione: 'da_riconciliare',
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', trans.fattura_id)
+    if (fattureCollegate && fattureCollegate.length > 0) {
+      // Scollega tutte le fatture e mettile in stato da_riconciliare
+      for (const f of fattureCollegate) {
+        await supabase
+          .from('fatture')
+          .update({ 
+            transazione_id: null,
+            stato_riconciliazione: 'da_riconciliare',
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', f.id)
+      }
     }
     
-    // Scollega la fattura dalla transazione
+    // Per retrocompatibilità, pulisci anche fattura_id (vecchio sistema 1:1)
     updateData.fattura_id = null
   }
   

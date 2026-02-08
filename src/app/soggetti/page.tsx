@@ -23,7 +23,7 @@ interface Transazione {
   data: string
   conto: string
   stato: string
-  fattura_id?: string  // ID della fattura collegata
+  fatture_ids?: string[]  // N:1: IDs delle fatture collegate
 }
 
 interface Soggetto {
@@ -80,10 +80,10 @@ export default function SoggettiPage() {
     }
   }
 
-  // Click on fattura to highlight corresponding transazione
+  // Click on fattura to highlight corresponding transazione (N:1: cerca via transazione_id)
   const handleFatturaClick = (fattura: Fattura, transazioni: Transazione[]) => {
-    // Find transaction linked to this fattura
-    const linkedTrans = transazioni.find(t => t.fattura_id === fattura.id)
+    // Find transaction that has this fattura in its fatture_ids
+    const linkedTrans = transazioni.find(t => t.fatture_ids?.includes(fattura.id))
     if (linkedTrans) {
       setHighlightTransazione(linkedTrans.id)
       setHighlightFattura(fattura.id)
@@ -95,10 +95,11 @@ export default function SoggettiPage() {
     }
   }
 
-  // Click on transazione to highlight corresponding fattura
+  // Click on transazione to highlight corresponding fatture (N:1: può avere più fatture)
   const handleTransazioneClick = (transazione: Transazione) => {
-    if (transazione.fattura_id) {
-      setHighlightFattura(transazione.fattura_id)
+    if (transazione.fatture_ids && transazione.fatture_ids.length > 0) {
+      // Highlight prima fattura
+      setHighlightFattura(transazione.fatture_ids[0])
       setHighlightTransazione(transazione.id)
       // Clear after 3 seconds
       setTimeout(() => {
@@ -203,7 +204,7 @@ export default function SoggettiPage() {
                           <p className="text-sm text-gray-400">Nessuna fattura</p>
                         ) : (
                           soggetto.fatture.map((f) => {
-                            const isLinked = soggetto.transazioni.some(t => t.fattura_id === f.id)
+                            const isLinked = soggetto.transazioni.some(t => t.fatture_ids?.includes(f.id))
                             const isHighlighted = highlightFattura === f.id
                             return (
                               <div 
@@ -258,7 +259,7 @@ export default function SoggettiPage() {
                           <p className="text-sm text-gray-400">Nessuna transazione</p>
                         ) : (
                           soggetto.transazioni.map((t) => {
-                            const isLinked = !!t.fattura_id
+                            const isLinked = t.fatture_ids && t.fatture_ids.length > 0
                             const isHighlighted = highlightTransazione === t.id
                             return (
                               <div 

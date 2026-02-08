@@ -95,7 +95,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Missing fatturaId or transazioneId' }, { status: 400 })
   }
   
-  // Update fattura
+  // N:1: collega la fattura alla transazione via transazione_id
+  // Più fatture possono avere lo stesso transazione_id
   const { error: errFattura } = await supabase
     .from('fatture')
     .update({ 
@@ -108,11 +109,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: errFattura.message }, { status: 500 })
   }
   
-  // Update transazione
+  // Marca la transazione come riconciliata (senza fattura_id - deprecato)
   const { error: errTrans } = await supabase
     .from('transazioni')
     .update({ 
-      fattura_id: fatturaId,
       stato_riconciliazione: 'riconciliata'
     })
     .eq('id', transazioneId)
@@ -279,6 +279,7 @@ export async function GET(request: NextRequest) {
   let autoApplied = 0
   
   // Auto-apply perfect matches if enabled and in dryRun mode
+  // N:1: setta solo transazione_id sulla fattura, non fattura_id sulla transazione
   if (autoApplyPerfect && dryRun && perfectMatches.length > 0) {
     for (const match of perfectMatches) {
       await supabase
@@ -292,7 +293,6 @@ export async function GET(request: NextRequest) {
       await supabase
         .from('transazioni')
         .update({ 
-          fattura_id: match.fattura.id,
           stato_riconciliazione: 'riconciliata'
         })
         .eq('id', match.transazione.id)
@@ -302,6 +302,7 @@ export async function GET(request: NextRequest) {
   }
   
   // Apply all matches if not dryRun
+  // N:1: setta solo transazione_id sulla fattura, non fattura_id sulla transazione
   if (!dryRun && matches.length > 0) {
     for (const match of matches) {
       await supabase
@@ -315,7 +316,6 @@ export async function GET(request: NextRequest) {
       await supabase
         .from('transazioni')
         .update({ 
-          fattura_id: match.fattura.id,
           stato_riconciliazione: 'riconciliata'
         })
         .eq('id', match.transazione.id)

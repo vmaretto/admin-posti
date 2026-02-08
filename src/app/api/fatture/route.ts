@@ -36,7 +36,7 @@ export async function PATCH(request: NextRequest) {
   const supabase = createServerClient()
   const body = await request.json()
   
-  const { id, stato_riconciliazione, note } = body
+  const { id, stato_riconciliazione, note, transazione_id } = body
   
   if (!id) {
     return NextResponse.json({ error: 'ID required' }, { status: 400 })
@@ -45,7 +45,13 @@ export async function PATCH(request: NextRequest) {
   const updateData: Record<string, any> = {}
   if (stato_riconciliazione !== undefined) updateData.stato_riconciliazione = stato_riconciliazione
   if (note !== undefined) updateData.note = note
+  if (transazione_id !== undefined) updateData.transazione_id = transazione_id
   updateData.updated_at = new Date().toISOString()
+  
+  // Se stato diventa "da_riconciliare", scollega la transazione
+  if (stato_riconciliazione === 'da_riconciliare') {
+    updateData.transazione_id = null
+  }
   
   const { error } = await supabase
     .from('fatture')
@@ -54,18 +60,6 @@ export async function PATCH(request: NextRequest) {
   
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-  
-  // Se stato diventa "da_riconciliare", scollega le transazioni associate
-  if (stato_riconciliazione === 'da_riconciliare') {
-    await supabase
-      .from('transazioni')
-      .update({ 
-        fattura_id: null, 
-        stato_riconciliazione: 'da_riconciliare',
-        updated_at: new Date().toISOString() 
-      })
-      .eq('fattura_id', id)
   }
   
   return NextResponse.json({ success: true })

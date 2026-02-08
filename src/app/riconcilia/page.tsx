@@ -98,7 +98,7 @@ export default function RiconciliaPage() {
     setSelectedTrans(prev => ({ ...prev, [fatturaId]: transazioneId }))
   }
 
-  const linkMatch = async (fatturaId: string) => {
+  const linkMatch = async (fatturaId: string, soggettoDenom: string) => {
     const transazioneId = selectedTrans[fatturaId]
     if (!transazioneId) return
     
@@ -114,7 +114,11 @@ export default function RiconciliaPage() {
       
       if (res.ok) {
         setMessage({ type: 'success', text: '✅ Riconciliazione completata!' })
-        loadData()
+        // Mantieni il soggetto espanso
+        const currentExpanded = new Set(expanded)
+        currentExpanded.add(soggettoDenom)
+        await loadData()
+        setExpanded(currentExpanded)
       } else {
         const err = await res.json()
         setMessage({ type: 'error', text: err.error || 'Errore' })
@@ -125,7 +129,7 @@ export default function RiconciliaPage() {
     setLinking(null)
   }
 
-  const skipFattura = async (fatturaId: string) => {
+  const skipFattura = async (fatturaId: string, soggettoDenom: string) => {
     // Marca come "non_trovata"
     try {
       await fetch('/api/fatture', {
@@ -133,7 +137,11 @@ export default function RiconciliaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: fatturaId, stato_riconciliazione: 'non_trovata' })
       })
-      loadData()
+      // Mantieni il soggetto espanso
+      const currentExpanded = new Set(expanded)
+      currentExpanded.add(soggettoDenom)
+      await loadData()
+      setExpanded(currentExpanded)
     } catch (err) {
       console.error(err)
     }
@@ -281,7 +289,7 @@ export default function RiconciliaPage() {
                         {/* Actions */}
                         <div className="flex flex-col gap-2 pt-2">
                           <button
-                            onClick={() => linkMatch(match.fattura.id)}
+                            onClick={() => linkMatch(match.fattura.id, soggetto.denominazione)}
                             disabled={linking === match.fattura.id || !selectedTrans[match.fattura.id]}
                             className="p-2 rounded-full bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-800 disabled:opacity-50"
                             title="Accetta"
@@ -293,7 +301,7 @@ export default function RiconciliaPage() {
                             )}
                           </button>
                           <button
-                            onClick={() => skipFattura(match.fattura.id)}
+                            onClick={() => skipFattura(match.fattura.id, soggetto.denominazione)}
                             className="p-2 rounded-full bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800"
                             title="Salta"
                           >

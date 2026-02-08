@@ -162,13 +162,13 @@ export default function FatturePage() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Stato</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Numero</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Data</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Controparte</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Imponibile</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">IVA</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Totale</th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Stato</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -182,6 +182,7 @@ export default function FatturePage() {
                       <span className="ml-1 px-2 py-1 text-xs font-medium rounded bg-gray-100 text-gray-800">NC</span>
                     )}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center">{getStatoBadge(fattura.stato_riconciliazione)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{fattura.numero}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(fattura.data_emissione)}</td>
                   <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
@@ -190,7 +191,6 @@ export default function FatturePage() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">{formatCurrency(fattura.imponibile)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">{formatCurrency(fattura.imposta)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900 text-right">{formatCurrency(fattura.totale)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-center">{getStatoBadge(fattura.stato_riconciliazione)}</td>
                 </tr>
               ))}
             </tbody>

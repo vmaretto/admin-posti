@@ -48,36 +48,27 @@ export async function GET() {
     .from('transazioni')
     .select('*', { count: 'exact', head: true })
   
-  const { count: fatture_riconciliate } = await supabase
+  // Get ALL fatture stati (dynamic)
+  const { data: allFatture } = await supabase
     .from('fatture')
-    .select('*', { count: 'exact', head: true })
-    .eq('stato_riconciliazione', 'riconciliata')
+    .select('stato_riconciliazione')
   
-  const { count: fatture_da_riconciliare } = await supabase
-    .from('fatture')
-    .select('*', { count: 'exact', head: true })
-    .eq('stato_riconciliazione', 'da_riconciliare')
+  const fattureStati: Record<string, number> = {}
+  allFatture?.forEach(f => {
+    const stato = f.stato_riconciliazione || 'senza_stato'
+    fattureStati[stato] = (fattureStati[stato] || 0) + 1
+  })
   
-  const { count: fatture_non_trovate } = await supabase
-    .from('fatture')
-    .select('*', { count: 'exact', head: true })
-    .eq('stato_riconciliazione', 'non_trovata')
-  
-  // Transazioni riconciliate/da riconciliare
-  const { count: transazioni_riconciliate } = await supabase
+  // Get ALL transazioni stati (dynamic)
+  const { data: allTransazioni } = await supabase
     .from('transazioni')
-    .select('*', { count: 'exact', head: true })
-    .eq('stato_riconciliazione', 'riconciliata')
+    .select('stato_riconciliazione')
   
-  const { count: transazioni_da_riconciliare } = await supabase
-    .from('transazioni')
-    .select('*', { count: 'exact', head: true })
-    .eq('stato_riconciliazione', 'da_riconciliare')
-  
-  const { count: transazioni_non_trovate } = await supabase
-    .from('transazioni')
-    .select('*', { count: 'exact', head: true })
-    .eq('stato_riconciliazione', 'non_trovata')
+  const transazioniStati: Record<string, number> = {}
+  allTransazioni?.forEach(t => {
+    const stato = t.stato_riconciliazione || 'senza_stato'
+    transazioniStati[stato] = (transazioniStati[stato] || 0) + 1
+  })
   
   // Fatture estere count
   const { count: fatture_estere } = await supabase
@@ -94,11 +85,7 @@ export async function GET() {
     fatture_ricevute: fatture_ricevute || 0,
     fatture_estere: fatture_estere || 0,
     transazioni_totali: transazioni_totali || 0,
-    fatture_riconciliate: fatture_riconciliate || 0,
-    fatture_da_riconciliare: fatture_da_riconciliare || 0,
-    fatture_non_trovate: fatture_non_trovate || 0,
-    transazioni_riconciliate: transazioni_riconciliate || 0,
-    transazioni_da_riconciliare: transazioni_da_riconciliare || 0,
-    transazioni_non_trovate: transazioni_non_trovate || 0
+    fatture_stati: fattureStati,
+    transazioni_stati: transazioniStati
   })
 }

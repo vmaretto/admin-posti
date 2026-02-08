@@ -22,11 +22,10 @@ export async function GET() {
     .select('id, numero, tipo, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente')
     .range(0, 9999)
   
-  // Get all transazioni (only those linked to fatture)
+  // Get all transazioni
   const { data: transazioni } = await supabase
     .from('transazioni')
     .select('id, importo, tipo, data, conto, stato_riconciliazione, controparte, fattura_id')
-    .not('fattura_id', 'is', null)
     .range(0, 9999)
   
   // Build fattura_id -> fattura map
@@ -71,30 +70,43 @@ export async function GET() {
     })
   }
   
-  // Process transazioni - associate to soggetto via fattura_id
+  // Process transazioni
   for (const t of transazioni || []) {
-    if (!t.fattura_id) continue
+    let normalizedKey = ''
     
-    const fattura = fatturaMap.get(t.fattura_id)
-    if (!fattura) continue
+    // 1. Se riconciliata, usa il soggetto della fattura collegata
+    if (t.fattura_id) {
+      const fattura = fatturaMap.get(t.fattura_id)
+      if (fattura) {
+        const denom = fattura.tipo === 'emessa' 
+          ? fattura.denominazione_cliente 
+          : fattura.denominazione_fornitore
+        if (denom) {
+          normalizedKey = normalizeName(denom)
+        }
+      }
+    }
     
-    const denom = fattura.tipo === 'emessa' 
-      ? fattura.denominazione_cliente 
-      : fattura.denominazione_fornitore
+    // 2. Se non riconciliata, cerca match ESATTO sulla controparte
+    if (!normalizedKey && t.controparte) {
+      const normalizedControparte = normalizeName(t.controparte)
+      // Match esatto (dopo normalizzazione)
+      if (soggettiMap.has(normalizedControparte)) {
+        normalizedKey = normalizedControparte
+      }
+    }
     
-    if (!denom) continue
-    
-    const normalizedKey = normalizeName(denom)
-    if (!normalizedKey || !soggettiMap.has(normalizedKey)) continue
-    
-    soggettiMap.get(normalizedKey)!.transazioni.push({
-      id: t.id,
-      importo: Math.abs(t.importo),
-      tipo: t.tipo,
-      data: t.data,
-      conto: t.conto,
-      stato: t.stato_riconciliazione
-    })
+    // Se trovato un soggetto, aggiungi la transazione
+    if (normalizedKey && soggettiMap.has(normalizedKey)) {
+      soggettiMap.get(normalizedKey)!.transazioni.push({
+        id: t.id,
+        importo: Math.abs(t.importo),
+        tipo: t.tipo,
+        data: t.data,
+        conto: t.conto,
+        stato: t.stato_riconciliazione
+      })
+    }
   }
   
   // Convert to array and calculate totals

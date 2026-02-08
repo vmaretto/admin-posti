@@ -33,6 +33,33 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(data)
 }
 
+export async function PATCH(request: NextRequest) {
+  const supabase = createServerClient()
+  const body = await request.json()
+  
+  const { id, stato_riconciliazione, note } = body
+  
+  if (!id) {
+    return NextResponse.json({ error: 'ID required' }, { status: 400 })
+  }
+  
+  const updateData: Record<string, any> = {}
+  if (stato_riconciliazione !== undefined) updateData.stato_riconciliazione = stato_riconciliazione
+  if (note !== undefined) updateData.note = note
+  updateData.updated_at = new Date().toISOString()
+  
+  const { error } = await supabase
+    .from('transazioni')
+    .update(updateData)
+    .eq('id', id)
+  
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+  
+  return NextResponse.json({ success: true })
+}
+
 export async function DELETE(request: NextRequest) {
   const supabase = createServerClient()
   const { searchParams } = new URL(request.url)

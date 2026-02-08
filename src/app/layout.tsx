@@ -37,6 +37,9 @@ export default function RootLayout({
                 <Link href="/riconcilia" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Riconcilia
                 </Link>
+                <Link href="/soggetti" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
+                  Soggetti
+                </Link>
                 <Link href="/import" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Import
                 </Link>

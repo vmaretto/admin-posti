@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
+import { X, Save } from 'lucide-react'
 
 interface Fattura {
   id: string
@@ -16,6 +17,7 @@ interface Fattura {
   imposta: number
   totale: number
   stato_riconciliazione: string
+  note?: string
 }
 
 function formatCurrency(amount: number): string {
@@ -31,6 +33,47 @@ export default function FatturePage() {
   const [loading, setLoading] = useState(true)
   const [filtroTipo, setFiltroTipo] = useState<string>('')
   const [filtroStato, setFiltroStato] = useState<string>('')
+  const [editingFattura, setEditingFattura] = useState<Fattura | null>(null)
+  const [editStato, setEditStato] = useState<string>('')
+  const [editNote, setEditNote] = useState<string>('')
+  const [saving, setSaving] = useState(false)
+
+  const openEdit = (fattura: Fattura) => {
+    setEditingFattura(fattura)
+    setEditStato(fattura.stato_riconciliazione)
+    setEditNote(fattura.note || '')
+  }
+
+  const closeEdit = () => {
+    setEditingFattura(null)
+    setEditStato('')
+    setEditNote('')
+  }
+
+  const saveEdit = async () => {
+    if (!editingFattura) return
+    setSaving(true)
+    
+    try {
+      const res = await fetch('/api/fatture', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingFattura.id,
+          stato_riconciliazione: editStato,
+          note: editNote
+        })
+      })
+      
+      if (res.ok) {
+        fetchFatture()
+        closeEdit()
+      }
+    } catch (err) {
+      console.error(err)
+    }
+    setSaving(false)
+  }
 
   const fetchFatture = () => {
     setLoading(true)
@@ -130,7 +173,7 @@ export default function FatturePage() {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {fatture.map((fattura) => (
-                <tr key={fattura.id} className="hover:bg-gray-50">
+                <tr key={fattura.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => openEdit(fattura)}>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className={`px-2 py-1 text-xs font-medium rounded ${fattura.tipo === 'emessa' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
                       {fattura.tipo === 'emessa' ? '↑ Emessa' : '↓ Ricevuta'}
@@ -157,6 +200,78 @@ export default function FatturePage() {
               Nessuna fattura trovata. Importa i dati dalla pagina Import.
             </div>
           )}
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {editingFattura && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex justify-between items-center px-6 py-4 border-b">
+              <h3 className="text-lg font-semibold">Modifica Fattura</h3>
+              <button onClick={closeEdit} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            
+            <div className="px-6 py-4 space-y-4">
+              <div>
+                <p className="text-sm text-gray-500">Fattura</p>
+                <p className="font-medium">{editingFattura.numero}</p>
+                <p className="text-sm text-gray-600">
+                  {editingFattura.tipo === 'emessa' ? editingFattura.denominazione_cliente : editingFattura.denominazione_fornitore}
+                </p>
+                <p className="text-sm font-semibold mt-1">{formatCurrency(editingFattura.totale)}</p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Stato Riconciliazione
+                </label>
+                <select
+                  value={editStato}
+                  onChange={(e) => setEditStato(e.target.value)}
+                  className="w-full border rounded-md px-3 py-2"
+                >
+                  <option value="da_riconciliare">Da riconciliare</option>
+                  <option value="riconciliata">Riconciliata</option>
+                  <option value="non_trovata">Non trovata</option>
+                  <option value="parziale">Parziale</option>
+                  <option value="contestata">Contestata</option>
+                  <option value="annullata">Annullata</option>
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Note
+                </label>
+                <textarea
+                  value={editNote}
+                  onChange={(e) => setEditNote(e.target.value)}
+                  className="w-full border rounded-md px-3 py-2 h-24"
+                  placeholder="Aggiungi note..."
+                />
+              </div>
+            </div>
+            
+            <div className="flex justify-end gap-2 px-6 py-4 border-t bg-gray-50">
+              <button
+                onClick={closeEdit}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={saving}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50"
+              >
+                <Save className="h-4 w-4" />
+                {saving ? 'Salvataggio...' : 'Salva'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

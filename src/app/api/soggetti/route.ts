@@ -10,11 +10,13 @@ export async function GET() {
   const { data: fatture } = await supabase
     .from('fatture')
     .select('id, numero, tipo, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente')
+    .range(0, 9999)
   
   // Get all transazioni
   const { data: transazioni } = await supabase
     .from('transazioni')
     .select('id, importo, tipo, data, conto, stato_riconciliazione, controparte')
+    .range(0, 9999)
   
   // Group by subject
   const soggettiMap = new Map<string, {

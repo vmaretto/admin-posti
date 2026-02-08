@@ -17,6 +17,7 @@ export async function GET(request: NextRequest) {
     .from('transazioni')
     .select('*, fattura:fatture(id, numero, data_emissione, totale, imponibile, imposta, tipo)')
     .order('data', { ascending: false })
+    .range(0, 9999)
   
   if (conto) query = query.eq('conto', conto)
   if (tipo) query = query.eq('tipo', tipo)

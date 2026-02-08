@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
     .from('fatture')
     .select('*, transazione:transazioni(id, data, importo, conto, controparte)')
     .order('data_emissione', { ascending: false })
+    .range(0, 9999)
   
   if (tipo) query = query.eq('tipo', tipo)
   if (stato) query = query.eq('stato_riconciliazione', stato)

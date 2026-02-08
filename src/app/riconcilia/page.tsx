@@ -53,6 +53,14 @@ export default function RiconciliaPage() {
       // Initialize all matches as accepted by default
       const matchesWithState = (data.matches || []).map((m: Match) => ({ ...m, accepted: true }))
       setMatches(matchesWithState)
+      
+      // Show message if perfect matches were auto-applied
+      if (data.autoApplied > 0) {
+        setMessage({ 
+          type: 'success', 
+          text: `✅ ${data.autoApplied} match perfetti (100%) applicati automaticamente. ${matchesWithState.length} da revisionare.` 
+        })
+      }
     } catch (err) {
       console.error(err)
       setMessage({ type: 'error', text: 'Errore durante la ricerca' })

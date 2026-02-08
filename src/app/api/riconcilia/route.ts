@@ -100,8 +100,9 @@ export async function GET(request: NextRequest) {
   const supabase = createServerClient()
   const { searchParams } = new URL(request.url)
   const dryRun = searchParams.get('dryRun') === 'true'
+  const autoApplyPerfect = searchParams.get('autoApplyPerfect') !== 'false' // Auto-apply 100% matches by default
   const toleranceDays = parseInt(searchParams.get('toleranceDays') || '30')
-  const minNameScore = parseInt(searchParams.get('minNameScore') || '20') // Minimum name similarity
+  const minNameScore = parseInt(searchParams.get('minNameScore') || '0') // No minimum by default - show all candidates
   
   // Get unmatched fatture
   const { data: fatture, error: errF } = await supabase
@@ -216,6 +217,36 @@ export async function GET(request: NextRequest) {
     })
   }
   
+  // Separate perfect matches (100% name score) from others
+  const perfectMatches = matches.filter(m => m.nameScore === 100)
+  const manualMatches = matches.filter(m => m.nameScore < 100)
+  
+  let autoApplied = 0
+  
+  // Auto-apply perfect matches if enabled and in dryRun mode
+  if (autoApplyPerfect && dryRun && perfectMatches.length > 0) {
+    for (const match of perfectMatches) {
+      await supabase
+        .from('fatture')
+        .update({ 
+          transazione_id: match.transazione.id,
+          stato_riconciliazione: 'riconciliata'
+        })
+        .eq('id', match.fattura.id)
+      
+      await supabase
+        .from('transazioni')
+        .update({ 
+          fattura_id: match.fattura.id,
+          stato_riconciliazione: 'riconciliata'
+        })
+        .eq('id', match.transazione.id)
+      
+      autoApplied++
+    }
+  }
+  
+  // Apply all matches if not dryRun
   if (!dryRun && matches.length > 0) {
     for (const match of matches) {
       await supabase
@@ -237,8 +268,10 @@ export async function GET(request: NextRequest) {
   }
   
   return NextResponse.json({ 
-    matches,
+    matches: dryRun ? manualMatches : matches, // In dryRun, return only non-perfect for manual review
+    perfectMatches: dryRun ? perfectMatches : [],
     count: matches.length,
+    autoApplied,
     dryRun
   })
 }

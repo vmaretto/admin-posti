@@ -65,4 +65,14 @@ body {
   .shadow {
     box-shadow: 0 1px 3px rgba(0,0,0,0.5) !important;
   }
+  .bg-gray-100 {
+    background-color: #1f2937 !important;
+  }
+  .hover\:bg-gray-50:hover {
+    background-color: #374151 !important;
+  }
+  /* Expanded row in soggetti */
+  .border-t.bg-gray-50 {
+    background-color: #1f2937 !important;
+  }
 }

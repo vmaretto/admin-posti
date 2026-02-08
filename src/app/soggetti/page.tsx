@@ -41,6 +41,7 @@ export default function SoggettiPage() {
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const [soloNonRiconciliati, setSoloNonRiconciliati] = useState(false)
 
   useEffect(() => {
     fetch('/api/soggetti')
@@ -65,23 +66,43 @@ export default function SoggettiPage() {
     setExpanded(newExpanded)
   }
 
-  const filteredSoggetti = soggetti.filter(s => 
-    s.denominazione.toLowerCase().includes(search.toLowerCase())
-  )
+  const filteredSoggetti = soggetti.filter(s => {
+    // Search filter
+    if (search && !s.denominazione.toLowerCase().includes(search.toLowerCase())) {
+      return false
+    }
+    // Non-riconciliati filter
+    if (soloNonRiconciliati) {
+      const hasNonRiconciliato = 
+        s.fatture.some(f => f.stato !== 'riconciliata') ||
+        s.transazioni.some(t => t.stato !== 'riconciliata')
+      if (!hasNonRiconciliato) return false
+    }
+    return true
+  })
 
   return (
     <div>
       <h1 className="text-3xl font-bold text-gray-900 mb-6">Vista per Soggetto</h1>
       
-      {/* Search */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6">
+      {/* Search & Filter */}
+      <div className="bg-white rounded-lg shadow p-4 mb-6 flex gap-4 items-center">
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Cerca soggetto..."
-          className="w-full border rounded-md px-4 py-2"
+          className="flex-1 border rounded-md px-4 py-2"
         />
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={soloNonRiconciliati}
+            onChange={(e) => setSoloNonRiconciliati(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300 text-indigo-600"
+          />
+          <span className="text-sm font-medium text-gray-700">Solo con non riconciliati</span>
+        </label>
       </div>
 
       {loading ? (

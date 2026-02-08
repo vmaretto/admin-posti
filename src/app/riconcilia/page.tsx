@@ -34,6 +34,8 @@ function formatDate(date: string): string {
 
 export default function RiconciliaPage() {
   const [matches, setMatches] = useState<Match[]>([])
+  const [orphanFatture, setOrphanFatture] = useState<any[]>([])
+  const [orphanTransazioni, setOrphanTransazioni] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null)
@@ -53,6 +55,10 @@ export default function RiconciliaPage() {
       // Initialize all matches as accepted by default
       const matchesWithState = (data.matches || []).map((m: Match) => ({ ...m, accepted: true }))
       setMatches(matchesWithState)
+      
+      // Set orphans
+      setOrphanFatture(data.orphanFatture || [])
+      setOrphanTransazioni(data.orphanTransazioni || [])
       
       // Show message if perfect matches were auto-applied
       if (data.autoApplied > 0) {
@@ -298,6 +304,79 @@ export default function RiconciliaPage() {
       {!loading && matches.length === 0 && !message && (
         <div className="text-center py-12 text-gray-500">
           Clicca "Cerca Match" per trovare corrispondenze automatiche tra fatture e transazioni.
+        </div>
+      )}
+
+      {/* Orphans section */}
+      {!loading && (orphanFatture.length > 0 || orphanTransazioni.length > 0) && (
+        <div className="mt-8 space-y-6">
+          {/* Fatture senza match */}
+          {orphanFatture.length > 0 && (
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <div className="px-6 py-4 border-b bg-orange-50">
+                <h3 className="font-semibold text-orange-800">
+                  ⚠️ Fatture senza transazione corrispondente ({orphanFatture.length})
+                </h3>
+                <p className="text-sm text-orange-600">
+                  Queste fatture non hanno trovato nessuna transazione con importo/data simili
+                </p>
+              </div>
+              <div className="divide-y max-h-64 overflow-y-auto">
+                {orphanFatture.slice(0, 20).map((f, idx) => (
+                  <div key={idx} className="px-6 py-3 flex justify-between items-center text-sm">
+                    <div>
+                      <span className="font-medium">{f.numero}</span>
+                      <span className="text-gray-500 ml-2">{f.denominazione}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="font-medium">{formatCurrency(f.totale)}</span>
+                      <span className="text-gray-500 ml-2">{formatDate(f.data)}</span>
+                    </div>
+                  </div>
+                ))}
+                {orphanFatture.length > 20 && (
+                  <div className="px-6 py-2 text-center text-gray-500 text-sm">
+                    ... e altre {orphanFatture.length - 20} fatture
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Transazioni senza match */}
+          {orphanTransazioni.length > 0 && (
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <div className="px-6 py-4 border-b bg-purple-50">
+                <h3 className="font-semibold text-purple-800">
+                  ⚠️ Transazioni senza fattura corrispondente ({orphanTransazioni.length})
+                </h3>
+                <p className="text-sm text-purple-600">
+                  Queste transazioni non hanno trovato nessuna fattura con importo/data simili
+                </p>
+              </div>
+              <div className="divide-y max-h-64 overflow-y-auto">
+                {orphanTransazioni.slice(0, 20).map((t, idx) => (
+                  <div key={idx} className="px-6 py-3 flex justify-between items-center text-sm">
+                    <div>
+                      <span className="font-medium capitalize">{t.conto}</span>
+                      <span className="text-gray-500 ml-2">{t.controparte}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className={`font-medium ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
+                        {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(t.importo)}
+                      </span>
+                      <span className="text-gray-500 ml-2">{formatDate(t.data)}</span>
+                    </div>
+                  </div>
+                ))}
+                {orphanTransazioni.length > 20 && (
+                  <div className="px-6 py-2 text-center text-gray-500 text-sm">
+                    ... e altre {orphanTransazioni.length - 20} transazioni
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -320,9 +320,37 @@ export async function GET(request: NextRequest) {
     }
   }
   
+  // Find orphans: fatture without any match candidate
+  const fattureWithMatch = new Set(candidates.map(c => c.fattura.id))
+  const orphanFatture = (fatture || [])
+    .filter(f => !fattureWithMatch.has(f.id))
+    .map(f => ({
+      id: f.id,
+      numero: f.numero,
+      totale: f.totale || ((f.imponibile || 0) + (f.imposta || 0)),
+      data: f.data_emissione,
+      denominazione: f.tipo === 'emessa' ? f.denominazione_cliente : f.denominazione_fornitore,
+      tipo: f.tipo
+    }))
+  
+  // Find orphans: transazioni without any match candidate
+  const transWithMatch = new Set(candidates.map(c => c.trans.id))
+  const orphanTransazioni = (transazioni || [])
+    .filter(t => !transWithMatch.has(t.id))
+    .map(t => ({
+      id: t.id,
+      importo: t.importo,
+      data: t.data,
+      controparte: t.controparte,
+      conto: t.conto,
+      tipo: t.tipo
+    }))
+  
   return NextResponse.json({ 
     matches: dryRun ? manualMatches : matches, // In dryRun, return only non-perfect for manual review
     perfectMatches: dryRun ? perfectMatches : [],
+    orphanFatture,      // Fatture senza nessun match possibile
+    orphanTransazioni,  // Transazioni senza nessun match possibile
     count: matches.length,
     autoApplied,
     dryRun

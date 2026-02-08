@@ -3,6 +3,16 @@ import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
+function normalizeName(name: string | null): string {
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|sarl|s r l|s p a)\b/g, '')
+    .trim();
+}
+
 export async function GET() {
   const supabase = createServerClient()
   
@@ -18,8 +28,9 @@ export async function GET() {
     .select('id, importo, tipo, data, conto, stato_riconciliazione, controparte')
     .range(0, 9999)
   
-  // Group by subject
+  // Map: normalized name -> { original name, fatture, transazioni }
   const soggettiMap = new Map<string, {
+    originalName: string
     fatture: any[]
     transazioni: any[]
   }>()
@@ -32,12 +43,18 @@ export async function GET() {
     
     if (!denom) continue
     
-    const key = denom.toLowerCase().trim()
-    if (!soggettiMap.has(key)) {
-      soggettiMap.set(key, { fatture: [], transazioni: [] })
+    const normalizedKey = normalizeName(denom)
+    if (!normalizedKey) continue
+    
+    if (!soggettiMap.has(normalizedKey)) {
+      soggettiMap.set(normalizedKey, { 
+        originalName: denom, 
+        fatture: [], 
+        transazioni: [] 
+      })
     }
     
-    soggettiMap.get(key)!.fatture.push({
+    soggettiMap.get(normalizedKey)!.fatture.push({
       id: f.id,
       numero: f.numero,
       tipo: f.tipo,
@@ -47,46 +64,48 @@ export async function GET() {
     })
   }
   
-  // Process transazioni - try to match to existing subjects
+  // Process transazioni - match to subjects by normalized name
   for (const t of transazioni || []) {
     if (!t.controparte) continue
     
-    const controparte = t.controparte.toLowerCase().trim()
+    const normalizedControparte = normalizeName(t.controparte)
+    if (!normalizedControparte) continue
     
-    // Try to find matching subject
-    let matchedKey: string = ''
-    for (const key of soggettiMap.keys()) {
-      // Check if controparte contains subject name or vice versa
-      if (controparte.includes(key) || key.includes(controparte)) {
-        matchedKey = key
-        break
-      }
-      // Check keywords - require EXACT match of significant words (>4 chars)
-      const keyWords = key.split(' ').filter((w: string) => w.length > 4)
-      const contWords = controparte.split(' ').filter((w: string) => w.length > 4)
-      let matchCount = 0
-      for (const kw of keyWords) {
-        if (contWords.some((cw: string) => cw === kw)) {
-          matchCount++
+    // Try exact normalized match first
+    let matchedKey = ''
+    
+    if (soggettiMap.has(normalizedControparte)) {
+      matchedKey = normalizedControparte
+    } else {
+      // Try partial match - if normalized controparte contains or is contained by any key
+      for (const key of soggettiMap.keys()) {
+        if (normalizedControparte.includes(key) || key.includes(normalizedControparte)) {
+          matchedKey = key
+          break
         }
-      }
-      // Need at least 2 matching keywords or 1 if there's only 1 keyword
-      if (matchCount >= 2 || (keyWords.length === 1 && matchCount === 1)) {
-        matchedKey = key
-        break
+        // Check if first significant word matches
+        const keyWords = key.split(' ').filter(w => w.length > 3)
+        const contWords = normalizedControparte.split(' ').filter(w => w.length > 3)
+        if (keyWords.length > 0 && contWords.length > 0 && keyWords[0] === contWords[0]) {
+          matchedKey = key
+          break
+        }
       }
     }
     
-    if (matchedKey === '') {
-      matchedKey = controparte
-      if (!soggettiMap.has(matchedKey)) {
-        soggettiMap.set(matchedKey, { fatture: [], transazioni: [] })
-      }
+    // If no match found, create new subject
+    if (!matchedKey) {
+      matchedKey = normalizedControparte
+      soggettiMap.set(matchedKey, {
+        originalName: t.controparte,
+        fatture: [],
+        transazioni: []
+      })
     }
     
     soggettiMap.get(matchedKey)!.transazioni.push({
       id: t.id,
-      importo: t.importo,
+      importo: Math.abs(t.importo),
       tipo: t.tipo,
       data: t.data,
       conto: t.conto,
@@ -95,35 +114,18 @@ export async function GET() {
   }
   
   // Convert to array and calculate totals
-  const soggetti = Array.from(soggettiMap.entries())
-    .map(([key, data]) => {
-      // Get display name from first fattura or first transazione
-      const displayName = data.fatture[0]?.denominazione || 
-        data.transazioni[0]?.controparte ||
-        key
-      
-      const totaleFatture = data.fatture.reduce((sum, f) => sum + f.totale, 0)
-      const totaleTransazioni = data.transazioni.reduce((sum, t) => 
-        sum + (t.tipo === 'entrata' ? t.importo : -t.importo), 0)
-      
-      // Find canonical name
-      let canonicalName = key
-      if (data.fatture.length > 0) {
-        const f = data.fatture[0]
-        canonicalName = f.tipo === 'emessa' 
-          ? (fatture?.find(x => x.id === f.id)?.denominazione_cliente || key)
-          : (fatture?.find(x => x.id === f.id)?.denominazione_fornitore || key)
-      } else if (data.transazioni.length > 0) {
-        canonicalName = transazioni?.find(x => x.id === data.transazioni[0].id)?.controparte || key
-      }
+  const soggetti = Array.from(soggettiMap.values())
+    .map(data => {
+      const totaleFatture = data.fatture.reduce((sum, f) => sum + (f.totale || 0), 0)
+      const totaleTransazioni = data.transazioni.reduce((sum, t) => sum + (t.importo || 0), 0)
       
       return {
-        denominazione: canonicalName,
+        denominazione: data.originalName,
         fatture: data.fatture.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
         transazioni: data.transazioni.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
         totaleFatture,
-        totaleTransazioni: Math.abs(totaleTransazioni),
-        saldo: totaleFatture - Math.abs(totaleTransazioni)
+        totaleTransazioni,
+        saldo: totaleFatture - totaleTransazioni
       }
     })
     .filter(s => s.fatture.length > 0 || s.transazioni.length > 0)

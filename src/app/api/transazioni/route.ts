@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
   // N:1 - una transazione può avere più fatture collegate via fatture.transazione_id
   let query = supabase
     .from('transazioni')
-    .select('*, fatture:fatture!transazione_id(id, numero, data_emissione, totale, imponibile, imposta, tipo)')
+    .select('*, fatture(id, numero, data_emissione, totale, imponibile, imposta, tipo)')
     .order('data', { ascending: false })
     .range(0, 9999)
   

@@ -14,8 +14,10 @@ interface DashboardStats {
   transazioni_totali: number
   fatture_riconciliate: number
   fatture_da_riconciliare: number
+  fatture_non_trovate: number
   transazioni_riconciliate: number
   transazioni_da_riconciliare: number
+  transazioni_non_trovate: number
 }
 
 function formatCurrency(amount: number): string {
@@ -162,10 +164,14 @@ export default function Dashboard() {
               <span className="text-gray-600 dark:text-gray-300">Da riconciliare</span>
               <span className="font-semibold text-orange-600">{stats.fatture_da_riconciliare}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-gray-600 dark:text-gray-300">Non trovate</span>
+              <span className="font-semibold text-red-600">{stats.fatture_non_trovate}</span>
+            </div>
             <div className="border-t pt-2 mt-2 dark:border-gray-600">
               <div className="flex justify-between font-bold">
                 <span className="text-gray-700 dark:text-gray-200">Totale</span>
-                <span className="dark:text-white">{stats.fatture_riconciliate + stats.fatture_da_riconciliare}</span>
+                <span className="dark:text-white">{stats.fatture_riconciliate + stats.fatture_da_riconciliare + stats.fatture_non_trovate}</span>
               </div>
             </div>
           </div>
@@ -185,10 +191,14 @@ export default function Dashboard() {
               <span className="text-gray-600 dark:text-gray-300">Da riconciliare</span>
               <span className="font-semibold text-orange-600">{stats.transazioni_da_riconciliare}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-gray-600 dark:text-gray-300">Non trovate</span>
+              <span className="font-semibold text-red-600">{stats.transazioni_non_trovate}</span>
+            </div>
             <div className="border-t pt-2 mt-2 dark:border-gray-600">
               <div className="flex justify-between font-bold">
                 <span className="text-gray-700 dark:text-gray-200">Totale</span>
-                <span className="dark:text-white">{stats.transazioni_riconciliate + stats.transazioni_da_riconciliare}</span>
+                <span className="dark:text-white">{stats.transazioni_riconciliate + stats.transazioni_da_riconciliare + stats.transazioni_non_trovate}</span>
               </div>
             </div>
           </div>

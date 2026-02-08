@@ -58,6 +58,11 @@ export async function GET() {
     .select('*', { count: 'exact', head: true })
     .eq('stato_riconciliazione', 'da_riconciliare')
   
+  const { count: fatture_non_trovate } = await supabase
+    .from('fatture')
+    .select('*', { count: 'exact', head: true })
+    .eq('stato_riconciliazione', 'non_trovata')
+  
   // Transazioni riconciliate/da riconciliare
   const { count: transazioni_riconciliate } = await supabase
     .from('transazioni')
@@ -68,6 +73,11 @@ export async function GET() {
     .from('transazioni')
     .select('*', { count: 'exact', head: true })
     .eq('stato_riconciliazione', 'da_riconciliare')
+  
+  const { count: transazioni_non_trovate } = await supabase
+    .from('transazioni')
+    .select('*', { count: 'exact', head: true })
+    .eq('stato_riconciliazione', 'non_trovata')
   
   // Fatture estere count
   const { count: fatture_estere } = await supabase
@@ -86,7 +96,9 @@ export async function GET() {
     transazioni_totali: transazioni_totali || 0,
     fatture_riconciliate: fatture_riconciliate || 0,
     fatture_da_riconciliare: fatture_da_riconciliare || 0,
+    fatture_non_trovate: fatture_non_trovate || 0,
     transazioni_riconciliate: transazioni_riconciliate || 0,
-    transazioni_da_riconciliare: transazioni_da_riconciliare || 0
+    transazioni_da_riconciliare: transazioni_da_riconciliare || 0,
+    transazioni_non_trovate: transazioni_non_trovate || 0
   })
 }

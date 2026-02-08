@@ -28,6 +28,7 @@ const STATO_LABELS: Record<string, string> = {
   'contestata': 'Contestate',
   'annullata': 'Annullate',
   'nota_credito': 'Note di credito',
+  'compensata': 'Compensate',
   'senza_stato': 'Senza stato'
 }
 
@@ -39,6 +40,7 @@ const STATO_COLORS: Record<string, string> = {
   'contestata': 'text-purple-600',
   'annullata': 'text-gray-500',
   'nota_credito': 'text-blue-600',
+  'compensata': 'text-cyan-600',
   'senza_stato': 'text-gray-400'
 }
 

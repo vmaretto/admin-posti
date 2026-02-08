@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
@@ -29,7 +29,7 @@ function formatDate(date: string): string {
   return format(new Date(date), 'dd MMM yyyy', { locale: it })
 }
 
-export default function FatturePage() {
+function FattureContent() {
   const searchParams = useSearchParams()
   const highlightId = searchParams.get('id')
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
@@ -301,5 +301,13 @@ export default function FatturePage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function FatturePage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div></div>}>
+      <FattureContent />
+    </Suspense>
   )
 }

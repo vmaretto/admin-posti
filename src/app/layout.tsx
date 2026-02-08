@@ -31,6 +31,9 @@ export default function RootLayout({
                 <Link href="/fatture" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Fatture
                 </Link>
+                <Link href="/fatture-estere" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
+                  Estere
+                </Link>
                 <Link href="/transazioni" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Transazioni
                 </Link>

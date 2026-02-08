@@ -58,6 +58,23 @@ export async function GET() {
     .select('*', { count: 'exact', head: true })
     .eq('stato_riconciliazione', 'da_riconciliare')
   
+  // Transazioni riconciliate/da riconciliare
+  const { count: transazioni_riconciliate } = await supabase
+    .from('transazioni')
+    .select('*', { count: 'exact', head: true })
+    .eq('stato_riconciliazione', 'riconciliata')
+  
+  const { count: transazioni_da_riconciliare } = await supabase
+    .from('transazioni')
+    .select('*', { count: 'exact', head: true })
+    .eq('stato_riconciliazione', 'da_riconciliare')
+  
+  // Fatture estere count
+  const { count: fatture_estere } = await supabase
+    .from('fatture')
+    .select('*', { count: 'exact', head: true })
+    .eq('fonte', 'estero')
+  
   return NextResponse.json({
     totale_entrate,
     totale_uscite,
@@ -65,8 +82,11 @@ export async function GET() {
     da_pagare,
     fatture_emesse: fatture_emesse || 0,
     fatture_ricevute: fatture_ricevute || 0,
+    fatture_estere: fatture_estere || 0,
     transazioni_totali: transazioni_totali || 0,
-    riconciliate: fatture_riconciliate || 0,
-    da_riconciliare: fatture_da_riconciliare || 0
+    fatture_riconciliate: fatture_riconciliate || 0,
+    fatture_da_riconciliare: fatture_da_riconciliare || 0,
+    transazioni_riconciliate: transazioni_riconciliate || 0,
+    transazioni_da_riconciliare: transazioni_da_riconciliare || 0
   })
 }

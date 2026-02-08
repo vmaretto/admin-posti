@@ -104,7 +104,8 @@ export async function GET() {
         tipo: t.tipo,
         data: t.data,
         conto: t.conto,
-        stato: t.stato_riconciliazione
+        stato: t.stato_riconciliazione,
+        fattura_id: t.fattura_id || null
       })
     }
   }

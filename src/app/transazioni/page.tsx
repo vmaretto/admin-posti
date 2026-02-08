@@ -14,6 +14,7 @@ interface Transazione {
   conto: string
   riferimento?: string
   stato_riconciliazione: string
+  note?: string
 }
 
 function formatCurrency(amount: number): string {
@@ -154,6 +155,7 @@ export default function TransazioniPage() {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Descrizione</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Importo</th>
                 <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Stato</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Note</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -171,6 +173,7 @@ export default function TransazioniPage() {
                     {trans.tipo === 'entrata' ? '+' : '-'}{formatCurrency(trans.importo)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">{getStatoBadge(trans.stato_riconciliazione)}</td>
+                  <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={trans.note || ''}>{trans.note || '-'}</td>
                 </tr>
               ))}
             </tbody>

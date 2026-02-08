@@ -169,6 +169,7 @@ export default function FatturePage() {
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Imponibile</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">IVA</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Totale</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Note</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -191,6 +192,7 @@ export default function FatturePage() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">{formatCurrency(fattura.imponibile)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-right">{formatCurrency(fattura.imposta)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900 text-right">{formatCurrency(fattura.totale)}</td>
+                  <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={fattura.note || ''}>{fattura.note || '-'}</td>
                 </tr>
               ))}
             </tbody>

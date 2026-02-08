@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
+import Link from 'next/link'
 
 interface Soggetto {
   denominazione: string
@@ -163,10 +164,15 @@ export default function SoggettiPage() {
                           <p className="text-sm text-gray-400">Nessuna fattura</p>
                         ) : (
                           soggetto.fatture.map((f, idx) => (
-                            <div key={idx} className="flex justify-between text-sm bg-white rounded px-3 py-2">
-                              <div>
-                                <span className="font-medium">{f.numero}</span>
-                                <span className="text-gray-500 ml-2">{formatDate(f.data)}</span>
+                            <Link 
+                              key={idx} 
+                              href={`/fatture?id=${f.id}`}
+                              className="flex justify-between text-sm bg-white rounded px-3 py-2 hover:bg-indigo-50 cursor-pointer transition group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium group-hover:text-indigo-600">{f.numero}</span>
+                                <span className="text-gray-500">{formatDate(f.data)}</span>
+                                <ExternalLink className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100" />
                               </div>
                               <div className="flex items-center gap-2">
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
@@ -176,7 +182,7 @@ export default function SoggettiPage() {
                                 }`}>{f.stato}</span>
                                 <span className="font-medium">{formatCurrency(f.totale)}</span>
                               </div>
-                            </div>
+                            </Link>
                           ))
                         )}
                       </div>
@@ -190,10 +196,15 @@ export default function SoggettiPage() {
                           <p className="text-sm text-gray-400">Nessuna transazione</p>
                         ) : (
                           soggetto.transazioni.map((t, idx) => (
-                            <div key={idx} className="flex justify-between text-sm bg-white rounded px-3 py-2">
-                              <div>
-                                <span className="font-medium capitalize">{t.conto}</span>
-                                <span className="text-gray-500 ml-2">{formatDate(t.data)}</span>
+                            <Link 
+                              key={idx} 
+                              href={`/transazioni?id=${t.id}`}
+                              className="flex justify-between text-sm bg-white rounded px-3 py-2 hover:bg-indigo-50 cursor-pointer transition group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium capitalize group-hover:text-indigo-600">{t.conto}</span>
+                                <span className="text-gray-500">{formatDate(t.data)}</span>
+                                <ExternalLink className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100" />
                               </div>
                               <div className="flex items-center gap-2">
                                 <span className={`px-1.5 py-0.5 text-xs rounded ${
@@ -202,10 +213,10 @@ export default function SoggettiPage() {
                                   'bg-gray-100 text-gray-700'
                                 }`}>{t.stato}</span>
                                 <span className={`font-medium ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
-                                  {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(t.importo)}
+                                  {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
                                 </span>
                               </div>
-                            </div>
+                            </Link>
                           ))
                         )}
                       </div>

@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
 import { X, Save } from 'lucide-react'
@@ -29,6 +30,10 @@ function formatDate(date: string): string {
 }
 
 export default function FatturePage() {
+  const searchParams = useSearchParams()
+  const highlightId = searchParams.get('id')
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
+  
   const [fatture, setFatture] = useState<Fattura[]>([])
   const [loading, setLoading] = useState(true)
   const [filtroTipo, setFiltroTipo] = useState<string>('')
@@ -37,6 +42,16 @@ export default function FatturePage() {
   const [editStato, setEditStato] = useState<string>('')
   const [editNote, setEditNote] = useState<string>('')
   const [saving, setSaving] = useState(false)
+  
+  // Scroll to highlighted row
+  useEffect(() => {
+    if (highlightId && !loading && fatture.length > 0) {
+      const row = rowRefs.current.get(highlightId)
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+  }, [highlightId, loading, fatture])
 
   const openEdit = (fattura: Fattura) => {
     setEditingFattura(fattura)
@@ -174,7 +189,16 @@ export default function FatturePage() {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {fatture.map((fattura) => (
-                <tr key={fattura.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => openEdit(fattura)}>
+                <tr 
+                  key={fattura.id} 
+                  ref={(el) => { if (el) rowRefs.current.set(fattura.id, el) }}
+                  className={`hover:bg-gray-50 cursor-pointer transition-all ${
+                    highlightId === fattura.id 
+                      ? 'bg-yellow-100 ring-2 ring-yellow-400 ring-inset' 
+                      : ''
+                  }`}
+                  onClick={() => openEdit(fattura)}
+                >
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className={`px-2 py-1 text-xs font-medium rounded ${fattura.tipo === 'emessa' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
                       {fattura.tipo === 'emessa' ? '↑ Emessa' : '↓ Ricevuta'}

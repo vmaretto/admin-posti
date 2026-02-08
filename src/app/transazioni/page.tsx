@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
 
@@ -40,11 +41,25 @@ const contoColors: Record<string, string> = {
 }
 
 export default function TransazioniPage() {
+  const searchParams = useSearchParams()
+  const highlightId = searchParams.get('id')
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
+  
   const [transazioni, setTransazioni] = useState<Transazione[]>([])
   const [loading, setLoading] = useState(true)
   const [filtroConto, setFiltroConto] = useState<string>('')
   const [filtroTipo, setFiltroTipo] = useState<string>('')
   const [filtroStato, setFiltroStato] = useState<string>('')
+  
+  // Scroll to highlighted row
+  useEffect(() => {
+    if (highlightId && !loading && transazioni.length > 0) {
+      const row = rowRefs.current.get(highlightId)
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+  }, [highlightId, loading, transazioni])
 
   const fetchTransazioni = () => {
     setLoading(true)
@@ -160,7 +175,15 @@ export default function TransazioniPage() {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {transazioni.map((trans) => (
-                <tr key={trans.id} className="hover:bg-gray-50">
+                <tr 
+                  key={trans.id}
+                  ref={(el) => { if (el) rowRefs.current.set(trans.id, el) }}
+                  className={`hover:bg-gray-50 transition-all ${
+                    highlightId === trans.id 
+                      ? 'bg-yellow-100 ring-2 ring-yellow-400 ring-inset' 
+                      : ''
+                  }`}
+                >
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(trans.data)}</td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className={`px-2 py-1 text-xs font-medium rounded ${contoColors[trans.conto] || 'bg-gray-100 text-gray-800'}`}>

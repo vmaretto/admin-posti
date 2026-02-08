@@ -194,7 +194,7 @@ function FattureContent() {
                   ref={(el) => { if (el) rowRefs.current.set(fattura.id, el) }}
                   className={`hover:bg-gray-50 cursor-pointer transition-all ${
                     highlightId === fattura.id 
-                      ? 'bg-yellow-100 ring-2 ring-yellow-400 ring-inset' 
+                      ? 'bg-yellow-200 ring-2 ring-yellow-400 ring-inset [&_*]:!text-gray-900' 
                       : ''
                   }`}
                   onClick={() => openEdit(fattura)}

@@ -180,7 +180,7 @@ function TransazioniContent() {
                   ref={(el) => { if (el) rowRefs.current.set(trans.id, el) }}
                   className={`hover:bg-gray-50 transition-all ${
                     highlightId === trans.id 
-                      ? 'bg-yellow-100 ring-2 ring-yellow-400 ring-inset' 
+                      ? 'bg-yellow-200 ring-2 ring-yellow-400 ring-inset [&_*]:!text-gray-900' 
                       : ''
                   }`}
                 >

@@ -187,6 +187,9 @@ export async function GET(request: NextRequest) {
       // Name similarity
       const nameScore = nameSimilarity(fatturaDenom, trans.controparte)
       
+      // Skip if name similarity is 0% - no point showing these
+      if (nameScore === 0) continue
+      
       // Skip if name similarity is too low (unless amount is exact match)
       if (nameScore < minNameScore && amountDiff > 0.01) continue
       

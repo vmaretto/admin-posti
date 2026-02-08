@@ -133,21 +133,23 @@ export async function GET(request: NextRequest) {
   const toleranceDays = parseInt(searchParams.get('toleranceDays') || '30')
   const minNameScore = parseInt(searchParams.get('minNameScore') || '0') // No minimum by default - show all candidates
   
-  // Get unmatched fatture
+  // Get unmatched fatture (increase range to get all)
   const { data: fatture, error: errF } = await supabase
     .from('fatture')
     .select('*')
     .eq('stato_riconciliazione', 'da_riconciliare')
+    .range(0, 9999)
   
   if (errF) {
     return NextResponse.json({ error: errF.message }, { status: 500 })
   }
   
-  // Get unmatched transazioni
+  // Get unmatched transazioni (increase range to get all)
   const { data: transazioni, error: errT } = await supabase
     .from('transazioni')
     .select('*')
     .eq('stato_riconciliazione', 'da_riconciliare')
+    .range(0, 9999)
   
   if (errT) {
     return NextResponse.json({ error: errT.message }, { status: 500 })

@@ -52,7 +52,7 @@ export async function GET() {
     const controparte = t.controparte.toLowerCase().trim()
     
     // Try to find matching subject
-    let matchedKey: string | null = null
+    let matchedKey: string = ''
     for (const key of soggettiMap.keys()) {
       // Check if controparte contains subject name or vice versa
       if (controparte.includes(key) || key.includes(controparte)) {
@@ -60,10 +60,10 @@ export async function GET() {
         break
       }
       // Check keywords
-      const keyWords = key.split(' ').filter(w => w.length > 3)
-      const contWords = controparte.split(' ').filter(w => w.length > 3)
+      const keyWords = key.split(' ').filter((w: string) => w.length > 3)
+      const contWords = controparte.split(' ').filter((w: string) => w.length > 3)
       for (const kw of keyWords) {
-        if (contWords.some(cw => cw.includes(kw) || kw.includes(cw))) {
+        if (contWords.some((cw: string) => cw.includes(kw) || kw.includes(cw))) {
           matchedKey = key
           break
         }
@@ -71,7 +71,7 @@ export async function GET() {
       if (matchedKey) break
     }
     
-    if (!matchedKey) {
+    if (matchedKey === '') {
       matchedKey = controparte
       if (!soggettiMap.has(matchedKey)) {
         soggettiMap.set(matchedKey, { fatture: [], transazioni: [] })

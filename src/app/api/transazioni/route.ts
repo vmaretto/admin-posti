@@ -13,10 +13,10 @@ export async function GET(request: NextRequest) {
   const from = searchParams.get('from')
   const to = searchParams.get('to')
   
-  // N:1 - una transazione può avere più fatture collegate via fatture.transazione_id
+  // Query transazioni
   let query = supabase
     .from('transazioni')
-    .select('*, fatture(id, numero, data_emissione, totale, imponibile, imposta, tipo)')
+    .select('*')
     .order('data', { ascending: false })
     .range(0, 9999)
   
@@ -26,13 +26,43 @@ export async function GET(request: NextRequest) {
   if (from) query = query.gte('data', from)
   if (to) query = query.lte('data', to)
   
-  const { data, error } = await query
+  const { data: transazioni, error } = await query
   
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
   
-  return NextResponse.json(data)
+  // N:1 - Query fatture collegate via transazione_id (query separata)
+  const { data: allFatture } = await supabase
+    .from('fatture')
+    .select('id, numero, data_emissione, totale, imponibile, imposta, tipo, transazione_id')
+    .not('transazione_id', 'is', null)
+    .range(0, 9999)
+  
+  // Build map: transazione_id -> fatture[]
+  const fattureByTransazione = new Map<string, any[]>()
+  for (const f of allFatture || []) {
+    if (!fattureByTransazione.has(f.transazione_id)) {
+      fattureByTransazione.set(f.transazione_id, [])
+    }
+    fattureByTransazione.get(f.transazione_id)!.push({
+      id: f.id,
+      numero: f.numero,
+      data_emissione: f.data_emissione,
+      totale: f.totale,
+      imponibile: f.imponibile,
+      imposta: f.imposta,
+      tipo: f.tipo
+    })
+  }
+  
+  // Merge fatture into transazioni
+  const result = (transazioni || []).map(t => ({
+    ...t,
+    fatture: fattureByTransazione.get(t.id) || []
+  }))
+  
+  return NextResponse.json(result)
 }
 
 export async function PATCH(request: NextRequest) {

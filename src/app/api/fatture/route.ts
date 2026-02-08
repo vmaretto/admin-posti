@@ -12,9 +12,10 @@ export async function GET(request: NextRequest) {
   const from = searchParams.get('from')
   const to = searchParams.get('to')
   
+  // Query fatture
   let query = supabase
     .from('fatture')
-    .select('*, transazione:transazioni(id, data, importo, conto, controparte)')
+    .select('*')
     .order('data_emissione', { ascending: false })
     .range(0, 9999)
   
@@ -23,13 +24,34 @@ export async function GET(request: NextRequest) {
   if (from) query = query.gte('data_emissione', from)
   if (to) query = query.lte('data_emissione', to)
   
-  const { data, error } = await query
+  const { data: fatture, error } = await query
   
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
   
-  return NextResponse.json(data)
+  // Get all transazioni for lookup
+  const transazioneIds = [...new Set((fatture || []).map(f => f.transazione_id).filter(Boolean))]
+  
+  let transazioniMap = new Map<string, any>()
+  if (transazioneIds.length > 0) {
+    const { data: transazioni } = await supabase
+      .from('transazioni')
+      .select('id, data, importo, conto, controparte')
+      .in('id', transazioneIds)
+    
+    for (const t of transazioni || []) {
+      transazioniMap.set(t.id, t)
+    }
+  }
+  
+  // Merge transazione into fatture (as array for consistency with UI)
+  const result = (fatture || []).map(f => ({
+    ...f,
+    transazione: f.transazione_id ? [transazioniMap.get(f.transazione_id)].filter(Boolean) : []
+  }))
+  
+  return NextResponse.json(result)
 }
 
 export async function PATCH(request: NextRequest) {

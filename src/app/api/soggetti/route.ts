@@ -35,7 +35,7 @@ export async function GET() {
   // Load fatture, transazioni, soggetti_cluster
   const { data: fatture } = await supabase
     .from('fatture')
-    .select('id, numero, tipo, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente, transazione_id')
+    .select('id, numero, tipo, tipo_documento, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente, transazione_id')
     .range(0, 9999)
 
   const { data: transazioni } = await supabase
@@ -72,6 +72,7 @@ export async function GET() {
       id: f.id,
       numero: f.numero,
       tipo: f.tipo,
+      tipo_documento: f.tipo_documento || 'fattura',
       totale: f.totale,
       data: f.data_emissione,
       stato: f.stato_riconciliazione,
@@ -238,14 +239,21 @@ export async function GET() {
   // Build soggetti array (with fatture or transazioni, sorted by aggregate)
   const soggetti = Array.from(soggettiMap.values())
     .map(data => {
-      const totaleFatture = data.fatture.reduce((sum, f) => sum + (f.totale || 0), 0)
+      // Le note di credito vanno SOTTRATTE dal totale fatture del soggetto:
+      // riducono il debito (se ricevute) o il credito (se emesse) verso il soggetto.
+      const totaleFatture = data.fatture.reduce((sum, f) => {
+        const sign = f.tipo_documento === 'nota_credito' ? -1 : 1
+        return sum + sign * (f.totale || 0)
+      }, 0)
       const totaleTransazioni = data.transazioni.reduce((sum, t) => sum + (t.importo || 0), 0)
+      const noteCreditoCount = data.fatture.filter(f => f.tipo_documento === 'nota_credito').length
       return {
         denominazione: data.originalName,
         fatture: data.fatture.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
         transazioni: data.transazioni.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
         totaleFatture,
         totaleTransazioni,
+        noteCreditoCount,
         saldo: totaleFatture - totaleTransazioni,
       }
     })

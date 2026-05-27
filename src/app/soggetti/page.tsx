@@ -18,6 +18,9 @@ import {
   X,
   Sparkles,
   Plus,
+  GitMerge,
+  Trash2,
+  Receipt,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -25,6 +28,7 @@ interface Fattura {
   id: string
   numero: string
   tipo: 'emessa' | 'ricevuta' | string
+  tipo_documento?: 'fattura' | 'nota_credito' | string
   totale: number
   data: string
   stato: string
@@ -49,6 +53,7 @@ interface Soggetto {
   transazioni: Transazione[]
   totaleFatture: number
   totaleTransazioni: number
+  noteCreditoCount?: number
   saldo: number
 }
 
@@ -109,6 +114,18 @@ function TipoFatturaBadge({ tipo }: { tipo: string }) {
   return null
 }
 
+function NotaCreditoBadge({ tipoDocumento }: { tipoDocumento?: string }) {
+  if (tipoDocumento !== 'nota_credito') return null
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-300"
+      title="Nota di credito (storno)"
+    >
+      <Receipt className="h-3 w-3" /> NC
+    </span>
+  )
+}
+
 export default function SoggettiPage() {
   const [soggetti, setSoggetti] = useState<Soggetto[]>([])
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
@@ -143,7 +160,11 @@ export default function SoggettiPage() {
     | { kind: 'group'; group: OrfanaGroup }
     | { kind: 'trans'; id: string; label: string; importo: number; data: string }
     | { kind: 'fattura'; id: string; label: string; importo: number; data: string }
+    | { kind: 'soggetto'; soggetto: Soggetto }
   const [ignoraModal, setIgnoraModal] = useState<{ target: IgnoraTarget; motivo: string; custom: string } | null>(null)
+
+  // Modal "Accorpa soggetti"
+  const [mergeModal, setMergeModal] = useState<{ from: Soggetto; toDenom: string } | null>(null)
 
   const MOTIVI_PREDEFINITI = [
     'Importo piccolo',
@@ -365,6 +386,36 @@ export default function SoggettiPage() {
     })
   }
 
+  function openIgnoraSoggetto(s: Soggetto) {
+    setIgnoraModal({
+      target: { kind: 'soggetto', soggetto: s },
+      motivo: '',
+      custom: '',
+    })
+  }
+
+  function openMergeModal(s: Soggetto) {
+    setMergeModal({ from: s, toDenom: '' })
+  }
+
+  async function submitMerge() {
+    if (!mergeModal || !mergeModal.toDenom) return
+    try {
+      const res = await fetch('/api/soggetti/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: mergeModal.from.denominazione, to: mergeModal.toDenom }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `Accorpati: ${data.fatture_aggiornate} fatture e ${data.transazioni_aggiornate} transazioni in "${mergeModal.toDenom}"`)
+      setMergeModal(null)
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
+
   async function submitIgnora() {
     if (!ignoraModal) return
     const motivoFinal = ignoraModal.motivo === 'Altro' ? ignoraModal.custom.trim() : ignoraModal.motivo
@@ -373,6 +424,38 @@ export default function SoggettiPage() {
       return
     }
     try {
+      if (ignoraModal.target.kind === 'soggetto') {
+        // Tralascia intero soggetto: batch su fatture e transazioni in parallelo
+        const fattureIds = ignoraModal.target.soggetto.fatture.map(f => f.id)
+        const transIds = ignoraModal.target.soggetto.transazioni.map(t => t.id)
+        const calls: Promise<Response>[] = []
+        if (fattureIds.length > 0) {
+          calls.push(fetch('/api/fatture/ignora', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fattura_ids: fattureIds, motivo: motivoFinal }),
+          }))
+        }
+        if (transIds.length > 0) {
+          calls.push(fetch('/api/transazioni/ignora', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transazione_ids: transIds, motivo: motivoFinal }),
+          }))
+        }
+        const results = await Promise.all(calls)
+        for (const r of results) {
+          if (!r.ok) {
+            const d = await r.json().catch(() => ({}))
+            throw new Error(d.error || `Errore ${r.status}`)
+          }
+        }
+        showFeedback('ok', `Soggetto "${ignoraModal.target.soggetto.denominazione}" tralasciato: ${fattureIds.length} fatture + ${transIds.length} transazioni (${motivoFinal})`)
+        setIgnoraModal(null)
+        await load()
+        return
+      }
+
       let url = ''
       let body: object = {}
       let count = 0
@@ -657,21 +740,26 @@ export default function SoggettiPage() {
                 className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
                 onClick={() => toggleExpand(soggetto.denominazione)}
               >
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
                   {expanded.has(soggetto.denominazione)
-                    ? <ChevronDown className="h-5 w-5 text-gray-400" />
-                    : <ChevronRight className="h-5 w-5 text-gray-400" />}
-                  <div>
-                    <p className="font-semibold text-gray-900 dark:text-white">{soggetto.denominazione}</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      {soggetto.fatture.length} fatture · {soggetto.transazioni.length} transazioni
+                    ? <ChevronDown className="h-5 w-5 text-gray-400 flex-shrink-0" />
+                    : <ChevronRight className="h-5 w-5 text-gray-400 flex-shrink-0" />}
+                  <div className="min-w-0">
+                    <p className="font-semibold text-gray-900 dark:text-white truncate">{soggetto.denominazione}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2 flex-wrap">
+                      <span>{soggetto.fatture.length} fatture · {soggetto.transazioni.length} transazioni</span>
+                      {soggetto.noteCreditoCount && soggetto.noteCreditoCount > 0 ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase rounded bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-300">
+                          <Receipt className="h-3 w-3" /> {soggetto.noteCreditoCount} NC
+                        </span>
+                      ) : null}
                     </p>
                   </div>
                 </div>
-                <div className="text-right">
+                <div className="text-right flex items-center gap-4">
                   <div className="flex gap-6">
                     <div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Fatture</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Fatture {soggetto.noteCreditoCount && soggetto.noteCreditoCount > 0 ? '(netto NC)' : ''}</p>
                       <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(soggetto.totaleFatture)}</p>
                     </div>
                     <div>
@@ -684,6 +772,22 @@ export default function SoggettiPage() {
                         {formatCurrency(soggetto.saldo)}
                       </p>
                     </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openMergeModal(soggetto) }}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-indigo-100 dark:hover:bg-indigo-900 text-gray-700 dark:text-gray-200 text-xs font-medium rounded whitespace-nowrap"
+                      title="Accorpa con un altro soggetto"
+                    >
+                      <GitMerge className="h-3 w-3" /> Accorpa…
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openIgnoraSoggetto(soggetto) }}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-amber-100 dark:hover:bg-amber-900 text-gray-700 dark:text-gray-200 text-xs font-medium rounded whitespace-nowrap"
+                      title="Tralascia intero soggetto"
+                    >
+                      <Trash2 className="h-3 w-3" /> Tralascia…
+                    </button>
                   </div>
                 </div>
               </div>
@@ -732,6 +836,7 @@ export default function SoggettiPage() {
                                     </button>
                                   )}
                                   <TipoFatturaBadge tipo={f.tipo} />
+                                  <NotaCreditoBadge tipoDocumento={f.tipo_documento} />
                                   <Link
                                     href={`/fatture?id=${f.id}`}
                                     className="font-medium hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400 truncate"
@@ -867,6 +972,58 @@ export default function SoggettiPage() {
         </div>
       )}
 
+      {/* Modal: Accorpa soggetti */}
+      {mergeModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setMergeModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+              Accorpa soggetti
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Le fatture e transazioni di <strong>{mergeModal.from.denominazione}</strong> verranno spostate
+              sotto il soggetto target che scegli. L&apos;operazione aggiorna le denominazioni (cliente/fornitore
+              e controparte) e <strong>non è facilmente reversibile</strong>.
+            </p>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+              Accorpa in… <span className="text-red-500">*</span>
+            </label>
+            <select
+              value={mergeModal.toDenom}
+              onChange={(e) => setMergeModal(prev => prev ? { ...prev, toDenom: e.target.value } : null)}
+              className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+            >
+              <option value="">Seleziona soggetto target…</option>
+              {soggettiDenoms
+                .filter(d => d !== mergeModal.from.denominazione)
+                .map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+            </select>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setMergeModal(null)}
+                className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={submitMerge}
+                disabled={!mergeModal.toDenom}
+                className="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium"
+              >
+                Accorpa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal: Conferma match con nota opzionale */}
       {matchModal && (
         <div
@@ -937,15 +1094,25 @@ export default function SoggettiPage() {
               {ignoraModal.target.kind === 'group' && 'Tralascia gruppo'}
               {ignoraModal.target.kind === 'trans' && 'Tralascia transazione'}
               {ignoraModal.target.kind === 'fattura' && 'Tralascia fattura'}
+              {ignoraModal.target.kind === 'soggetto' && 'Tralascia intero soggetto'}
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
-              {ignoraModal.target.kind === 'group' ? (
+              {ignoraModal.target.kind === 'group' && (
                 <>
                   Stai per tralasciare <strong>{ignoraModal.target.group.count}</strong> transazione/i del gruppo
                   &laquo;{ignoraModal.target.group.label}&raquo; per un totale di{' '}
                   <strong>{formatCurrency(ignoraModal.target.group.totale)}</strong>.
                 </>
-              ) : (
+              )}
+              {ignoraModal.target.kind === 'soggetto' && (
+                <>
+                  Stai per tralasciare il soggetto <strong>{ignoraModal.target.soggetto.denominazione}</strong>:{' '}
+                  {ignoraModal.target.soggetto.fatture.length} fatture e{' '}
+                  {ignoraModal.target.soggetto.transazioni.length} transazioni verranno marcate come tralasciate
+                  con questa motivazione.
+                </>
+              )}
+              {(ignoraModal.target.kind === 'trans' || ignoraModal.target.kind === 'fattura') && (
                 <>
                   {ignoraModal.target.kind === 'fattura' && 'Fattura '}
                   {ignoraModal.target.label} · {formatDate(ignoraModal.target.data)} ·{' '}

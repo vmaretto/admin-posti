@@ -21,6 +21,8 @@ import {
   GitMerge,
   Trash2,
   Receipt,
+  RotateCcw,
+  Archive,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -48,6 +50,7 @@ interface Transazione {
 }
 
 interface Soggetto {
+  key: string // chiave normalizzata, identificatore unico
   denominazione: string
   fatture: Fattura[]
   transazioni: Transazione[]
@@ -55,6 +58,28 @@ interface Soggetto {
   totaleTransazioni: number
   noteCreditoCount?: number
   saldo: number
+}
+
+interface FatturaTralasciata {
+  id: string
+  numero: string
+  tipo: string
+  tipo_documento?: string
+  totale: number
+  data: string
+  denominazione: string
+  motivo: string
+}
+
+interface TransTralasciata {
+  id: string
+  importo: number
+  tipo: string
+  data: string
+  conto: string
+  descrizione?: string | null
+  controparte?: string | null
+  motivo: string
 }
 
 interface Orfana {
@@ -81,6 +106,7 @@ interface OrfanaGroup {
 interface SoggettiResponse {
   soggetti: Soggetto[]
   orfaneGroups: OrfanaGroup[]
+  tralasciati?: { fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }
 }
 
 type DragSource =

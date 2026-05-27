@@ -236,9 +236,46 @@ export async function GET() {
   })
     .sort((a, b) => b.totale - a.totale)
 
+  // DEDUP CRITICO: se due soggetti hanno lo stesso display name (case-insensitive,
+  // trim), li fondiamo in uno. Causa tipica: soggetti_cluster con varianti che
+  // normalizzano in modo diverso ma mostrano lo stesso testo all'utente.
+  type SoggettoData = { originalName: string; fatture: any[]; transazioni: any[] }
+  const dedupedMap = new Map<string, { primaryKey: string; data: SoggettoData }>()
+  for (const [key, data] of soggettiMap.entries()) {
+    const displayKey = data.originalName.toLowerCase().trim()
+    if (!dedupedMap.has(displayKey)) {
+      dedupedMap.set(displayKey, {
+        primaryKey: key,
+        data: {
+          originalName: data.originalName,
+          fatture: [...data.fatture],
+          transazioni: [...data.transazioni],
+        },
+      })
+    } else {
+      const existing = dedupedMap.get(displayKey)!
+      existing.data.fatture.push(...data.fatture)
+      existing.data.transazioni.push(...data.transazioni)
+    }
+  }
+  // Dedup anche fatture e transazioni per id (safety net contro doppi inserimenti)
+  for (const { data } of dedupedMap.values()) {
+    const seenF = new Set<string>()
+    data.fatture = data.fatture.filter(f => {
+      if (seenF.has(f.id)) return false
+      seenF.add(f.id); return true
+    })
+    const seenT = new Set<string>()
+    data.transazioni = data.transazioni.filter(t => {
+      if (seenT.has(t.id)) return false
+      seenT.add(t.id); return true
+    })
+  }
+
   // Build soggetti array (with fatture or transazioni, sorted by aggregate)
-  const soggetti = Array.from(soggettiMap.values())
-    .map(data => {
+  const soggetti = Array.from(dedupedMap.values())
+    .map(({ primaryKey, data }) => {
+      const key = primaryKey
       // Le note di credito vanno SOTTRATTE dal totale fatture del soggetto:
       // riducono il debito (se ricevute) o il credito (se emesse) verso il soggetto.
       const totaleFatture = data.fatture.reduce((sum, f) => {
@@ -248,6 +285,7 @@ export async function GET() {
       const totaleTransazioni = data.transazioni.reduce((sum, t) => sum + (t.importo || 0), 0)
       const noteCreditoCount = data.fatture.filter(f => f.tipo_documento === 'nota_credito').length
       return {
+        key, // chiave normalizzata, identificatore unico
         denominazione: data.originalName,
         fatture: data.fatture.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
         transazioni: data.transazioni.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
@@ -260,5 +298,75 @@ export async function GET() {
     .filter(s => s.fatture.length > 0 || s.transazioni.length > 0)
     .sort((a, b) => (b.totaleFatture + b.totaleTransazioni) - (a.totaleFatture + a.totaleTransazioni))
 
-  return NextResponse.json({ soggetti, orfaneGroups })
+  // Lista TRALASCIATI: fatture e transazioni con stato_riconciliazione='non_trovata'
+  // (estratti dalle note se presenti come '[Tralasciata: motivo]\n…')
+  function estraiMotivo(note: string | null | undefined): string {
+    if (!note) return ''
+    const m = /^\[Tralasciata:\s*(.+?)\]/.exec(note)
+    return m ? m[1] : ''
+  }
+
+  const fattureTralasciate = (fatture || [])
+    .filter(f => f.stato_riconciliazione === 'non_trovata')
+    .map(f => {
+      const denom = f.tipo === 'emessa' ? f.denominazione_cliente : f.denominazione_fornitore
+      return {
+        id: f.id,
+        numero: f.numero,
+        tipo: f.tipo,
+        tipo_documento: f.tipo_documento || 'fattura',
+        totale: f.totale,
+        data: f.data_emissione,
+        denominazione: denom || '—',
+        motivo: estraiMotivo((f as { note?: string | null }).note),
+      }
+    })
+    .sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime())
+
+  // Need to refetch notes; we didn't select 'note' above. Let's refetch only the ignored ones.
+  const tralasciatIdsF = fattureTralasciate.map(f => f.id)
+  if (tralasciatIdsF.length > 0) {
+    const { data: noteRows } = await supabase
+      .from('fatture')
+      .select('id, note')
+      .in('id', tralasciatIdsF)
+    const noteMap = new Map<string, string | null>()
+    for (const r of noteRows || []) noteMap.set(r.id, r.note)
+    for (const f of fattureTralasciate) {
+      f.motivo = estraiMotivo(noteMap.get(f.id))
+    }
+  }
+
+  const transTralasciate = (transazioni || [])
+    .filter(t => t.stato_riconciliazione === 'non_trovata')
+    .map(t => ({
+      id: t.id,
+      importo: Math.abs(t.importo),
+      tipo: t.tipo,
+      data: t.data,
+      conto: t.conto,
+      descrizione: t.descrizione,
+      controparte: t.controparte,
+      motivo: '',
+    }))
+    .sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime())
+
+  const tralasciatIdsT = transTralasciate.map(t => t.id)
+  if (tralasciatIdsT.length > 0) {
+    const { data: noteRows } = await supabase
+      .from('transazioni')
+      .select('id, note')
+      .in('id', tralasciatIdsT)
+    const noteMap = new Map<string, string | null>()
+    for (const r of noteRows || []) noteMap.set(r.id, r.note)
+    for (const t of transTralasciate) {
+      t.motivo = estraiMotivo(noteMap.get(t.id))
+    }
+  }
+
+  return NextResponse.json({
+    soggetti,
+    orfaneGroups,
+    tralasciati: { fatture: fattureTralasciate, transazioni: transTralasciate },
+  })
 }

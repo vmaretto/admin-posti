@@ -43,27 +43,30 @@ export async function POST(request: NextRequest) {
   // Inserisci in tabella riconciliazioni (N:1 supportato)
   const { error: errRic } = await supabase
     .from('riconciliazioni')
-    .upsert({ 
+    .upsert({
       fattura_id: fatturaId,
-      transazione_id: transazioneId 
+      transazione_id: transazioneId
     }, { onConflict: 'fattura_id' })
-  
+
   if (errRic) {
     return NextResponse.json({ error: errRic.message }, { status: 500 })
   }
-  
-  // Aggiorna stato fattura
+
+  // Aggiorna stato fattura E imposta transazione_id (la vista Soggetti legge da qui)
   await supabase
     .from('fatture')
-    .update({ stato_riconciliazione: 'riconciliata' })
+    .update({
+      stato_riconciliazione: 'riconciliata',
+      transazione_id: transazioneId,
+    })
     .eq('id', fatturaId)
-  
+
   // Aggiorna stato transazione
   await supabase
     .from('transazioni')
     .update({ stato_riconciliazione: 'riconciliata' })
     .eq('id', transazioneId)
-  
+
   return NextResponse.json({ success: true })
 }
 
@@ -90,10 +93,13 @@ export async function DELETE(request: NextRequest) {
     .delete()
     .eq('fattura_id', fatturaId)
   
-  // Aggiorna stato fattura
+  // Aggiorna stato fattura e azzera transazione_id
   await supabase
     .from('fatture')
-    .update({ stato_riconciliazione: 'da_riconciliare' })
+    .update({
+      stato_riconciliazione: 'da_riconciliare',
+      transazione_id: null,
+    })
     .eq('id', fatturaId)
   
   // Se la transazione non ha più fatture collegate, mettila da_riconciliare

@@ -3,15 +3,25 @@ import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\b(srl|spa|snc|sas|srls|sapa|ltd|inc|gmbh|sarl|s r l|s p a)\b/g, '')
+    .trim()
+}
+
 /**
  * POST /api/transazioni/assign-soggetto
- * Assegna una transazione orfana a un soggetto esistente aggiornando il campo controparte.
+ * Assegna una o più transazioni orfane a un soggetto (esistente o nuovo).
  *
- * Body: { transazione_id: string, soggetto: string }
+ * Body:
+ *  - { transazione_ids: string[], soggetto: string, createNew?: boolean }
+ *  - oppure (compat): { transazione_id: string, soggetto: string }
  *
- * Il valore di "soggetto" deve essere la denominazione originale di un soggetto già esistente
- * (denominazione_cliente o denominazione_fornitore di una fattura), così che la
- * normalizzazione lato server riconcili la transazione al gruppo giusto.
+ * Se `createNew: true`, registra il nome in `soggetti_cluster` così la vista
+ * Soggetti lo mostrerà come soggetto a sé anche senza fatture collegate.
  */
 export async function POST(request: NextRequest) {
   const supabase = createServerClient()
@@ -23,39 +33,48 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { transazione_id, soggetto } = body
+  const { transazione_ids, transazione_id, soggetto, createNew } = body
 
-  if (!transazione_id || typeof transazione_id !== 'string') {
-    return NextResponse.json({ error: 'transazione_id is required' }, { status: 400 })
+  const ids: string[] = Array.isArray(transazione_ids)
+    ? transazione_ids
+    : transazione_id
+    ? [transazione_id]
+    : []
+
+  if (!ids.length) {
+    return NextResponse.json({ error: 'transazione_ids is required (non-empty array)' }, { status: 400 })
   }
   if (!soggetto || typeof soggetto !== 'string' || !soggetto.trim()) {
     return NextResponse.json({ error: 'soggetto is required' }, { status: 400 })
   }
+  const soggettoClean = soggetto.trim()
 
-  // Verifica che la transazione esista
-  const { data: trans, error: errTrans } = await supabase
-    .from('transazioni')
-    .select('id, stato_riconciliazione')
-    .eq('id', transazione_id)
-    .single()
-
-  if (errTrans || !trans) {
-    return NextResponse.json({ error: 'Transazione not found' }, { status: 404 })
+  // If creating a new soggetto, register in soggetti_cluster (idempotent)
+  if (createNew) {
+    const nomeNorm = normalizeName(soggettoClean)
+    if (nomeNorm) {
+      // Upsert by nome_normalizzato (unique)
+      const { error: errCluster } = await supabase
+        .from('soggetti_cluster')
+        .upsert({ nome_normalizzato: nomeNorm, varianti: [soggettoClean] }, { onConflict: 'nome_normalizzato' })
+      if (errCluster) {
+        return NextResponse.json({ error: `Errore creazione soggetto: ${errCluster.message}` }, { status: 500 })
+      }
+    }
   }
 
-  // Aggiorna la controparte. La vista soggetti raggrupperà automaticamente
-  // grazie alla normalizzazione del nome.
+  // Batch update controparte for all selected transactions
   const { error: errUpdate } = await supabase
     .from('transazioni')
     .update({
-      controparte: soggetto.trim(),
+      controparte: soggettoClean,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', transazione_id)
+    .in('id', ids)
 
   if (errUpdate) {
     return NextResponse.json({ error: errUpdate.message }, { status: 500 })
   }
 
-  return NextResponse.json({ success: true })
+  return NextResponse.json({ success: true, updated: ids.length, soggetto: soggettoClean })
 }

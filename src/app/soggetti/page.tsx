@@ -3,7 +3,22 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
-import { ChevronDown, ChevronRight, ExternalLink, Link2, Unlink, Zap, AlertTriangle, ArrowDownLeft, ArrowUpRight, GripVertical } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Link2,
+  Unlink,
+  Zap,
+  AlertTriangle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  GripVertical,
+  Check,
+  X,
+  Sparkles,
+  Plus,
+} from 'lucide-react'
 import Link from 'next/link'
 
 interface Fattura {
@@ -43,14 +58,24 @@ interface Orfana {
   tipo: 'entrata' | 'uscita' | string
   data: string
   conto: string
-  descrizione?: string
-  controparte?: string
+  descrizione?: string | null
+  controparte?: string | null
   stato: string
+}
+
+interface OrfanaGroup {
+  key: string
+  label: string
+  varianti: string[]
+  count: number
+  totale: number
+  suggestion: { soggetto: string; confidence: number } | null
+  transazioni: Orfana[]
 }
 
 interface SoggettiResponse {
   soggetti: Soggetto[]
-  orfane: Orfana[]
+  orfaneGroups: OrfanaGroup[]
 }
 
 type DragSource =
@@ -66,7 +91,6 @@ function formatDate(date: string): string {
   return format(new Date(date), 'dd MMM yyyy', { locale: it })
 }
 
-// Badge Attiva (emessa) / Passiva (ricevuta)
 function TipoFatturaBadge({ tipo }: { tipo: string }) {
   if (tipo === 'emessa') {
     return (
@@ -87,22 +111,40 @@ function TipoFatturaBadge({ tipo }: { tipo: string }) {
 
 export default function SoggettiPage() {
   const [soggetti, setSoggetti] = useState<Soggetto[]>([])
-  const [orfane, setOrfane] = useState<Orfana[]>([])
+  const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [soloNonRiconciliati, setSoloNonRiconciliati] = useState(false)
   const [highlightFattura, setHighlightFattura] = useState<string | null>(null)
   const [highlightTransazione, setHighlightTransazione] = useState<string | null>(null)
 
-  // Drag & drop state
   const dragSource = useRef<DragSource>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
 
-  // Auto-match feedback
   const [autoMatching, setAutoMatching] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [orfaneOpen, setOrfaneOpen] = useState(true)
+
+  // For "Crea nuovo soggetto" per group
+  const [newSoggettoInput, setNewSoggettoInput] = useState<Record<string, string>>({})
+
+  // Modal "Tralascia con motivazione"
+  type IgnoraTarget =
+    | { kind: 'group'; group: OrfanaGroup }
+    | { kind: 'single'; id: string; label: string; importo: number; data: string }
+  const [ignoraModal, setIgnoraModal] = useState<{ target: IgnoraTarget; motivo: string; custom: string } | null>(null)
+
+  const MOTIVI_PREDEFINITI = [
+    'Importo piccolo',
+    'Spesa sbagliata',
+    'Stipendi',
+    'Imposte e tasse',
+    'Commissioni bancarie',
+    'Spostamento tra conti',
+    'Movimento personale',
+  ]
 
   function showFeedback(kind: 'ok' | 'err', text: string) {
     setFeedback({ kind, text })
@@ -115,7 +157,7 @@ export default function SoggettiPage() {
       const res = await fetch('/api/soggetti')
       const data: SoggettiResponse = await res.json()
       setSoggetti(data.soggetti || [])
-      setOrfane(data.orfane || [])
+      setOrfaneGroups(data.orfaneGroups || [])
     } catch (e) {
       console.error(e)
       showFeedback('err', 'Errore nel caricamento')
@@ -129,23 +171,27 @@ export default function SoggettiPage() {
   }, [load])
 
   const toggleExpand = (denom: string) => {
-    const newExpanded = new Set(expanded)
-    if (newExpanded.has(denom)) {
-      newExpanded.delete(denom)
-    } else {
-      newExpanded.add(denom)
-    }
-    setExpanded(newExpanded)
-    if (!newExpanded.has(denom)) {
+    const next = new Set(expanded)
+    if (next.has(denom)) next.delete(denom)
+    else next.add(denom)
+    setExpanded(next)
+    if (!next.has(denom)) {
       setHighlightFattura(null)
       setHighlightTransazione(null)
     }
   }
 
+  const toggleGroupExpand = (key: string) => {
+    const next = new Set(expandedGroups)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setExpandedGroups(next)
+  }
+
   const handleFatturaClick = (fattura: Fattura, transazioni: Transazione[]) => {
-    const linkedTrans = transazioni.find(t => t.fatture_ids?.includes(fattura.id))
-    if (linkedTrans) {
-      setHighlightTransazione(linkedTrans.id)
+    const linked = transazioni.find(t => t.fatture_ids?.includes(fattura.id))
+    if (linked) {
+      setHighlightTransazione(linked.id)
       setHighlightFattura(fattura.id)
       setTimeout(() => {
         setHighlightTransazione(null)
@@ -165,60 +211,46 @@ export default function SoggettiPage() {
     }
   }
 
-  // ---- Drag & Drop handlers ----
+  // ---- Drag & Drop ----
   const onDragStart = (src: NonNullable<DragSource>, e: React.DragEvent) => {
     dragSource.current = src
     e.dataTransfer.effectAllowed = 'link'
     e.dataTransfer.setData('text/plain', `${src.kind}:${src.id}`)
   }
-
   const onDragEnd = () => {
     dragSource.current = null
     setDropTargetId(null)
   }
-
-  // Validate that a drop is acceptable
   function canDrop(src: NonNullable<DragSource>, target: NonNullable<DragSource>): { ok: boolean; reason?: string } {
-    if (src.kind === target.kind) {
-      return { ok: false, reason: 'Trascina una fattura su una transazione (o viceversa)' }
-    }
-    if (src.soggetto !== target.soggetto) {
-      return { ok: false, reason: 'Soggetto diverso: non si può abbinare' }
-    }
+    if (src.kind === target.kind) return { ok: false, reason: 'Trascina una fattura su una transazione (o viceversa)' }
+    if (src.soggetto !== target.soggetto) return { ok: false, reason: 'Soggetto diverso: non si può abbinare' }
     return { ok: true }
   }
-
   const onDragOver = (target: NonNullable<DragSource>, e: React.DragEvent) => {
     const src = dragSource.current
     if (!src) return
-    const ok = canDrop(src, target).ok
-    if (ok) {
+    if (canDrop(src, target).ok) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'link'
       setDropTargetId(target.id)
     }
   }
-
   const onDragLeave = (target: NonNullable<DragSource>) => {
     if (dropTargetId === target.id) setDropTargetId(null)
   }
-
   const onDrop = async (target: NonNullable<DragSource>, e: React.DragEvent) => {
     e.preventDefault()
     const src = dragSource.current
     setDropTargetId(null)
     dragSource.current = null
     if (!src) return
-
     const check = canDrop(src, target)
     if (!check.ok) {
       showFeedback('err', check.reason || 'Operazione non valida')
       return
     }
-
     const fatturaId = src.kind === 'fattura' ? src.id : target.id
     const transazioneId = src.kind === 'transazione' ? src.id : target.id
-
     try {
       const res = await fetch('/api/riconcilia', {
         method: 'POST',
@@ -244,8 +276,7 @@ export default function SoggettiPage() {
       showFeedback('ok', 'Match rimosso')
       await load()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Errore'
-      showFeedback('err', msg)
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
     }
   }
 
@@ -258,39 +289,80 @@ export default function SoggettiPage() {
       showFeedback('ok', `Match automatici: ${data.matched || 0}`)
       await load()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Errore'
-      showFeedback('err', msg)
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
     } finally {
       setAutoMatching(false)
     }
   }
 
-  async function handleAssignSoggetto(transazioneId: string, soggetto: string) {
+  async function assignGroupToSoggetto(group: OrfanaGroup, soggetto: string, createNew = false) {
     try {
+      const ids = group.transazioni.map(t => t.id)
       const res = await fetch('/api/transazioni/assign-soggetto', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transazione_id: transazioneId, soggetto }),
+        body: JSON.stringify({ transazione_ids: ids, soggetto, createNew }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', `Transazione assegnata a "${soggetto}"`)
+      showFeedback('ok', `${ids.length} transazioni assegnate a "${soggetto}"`)
       await load()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Errore'
-      showFeedback('err', msg)
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
+
+  function openIgnoraGroup(group: OrfanaGroup) {
+    setIgnoraModal({ target: { kind: 'group', group }, motivo: '', custom: '' })
+  }
+
+  function openIgnoraSingle(t: Orfana) {
+    setIgnoraModal({
+      target: {
+        kind: 'single',
+        id: t.id,
+        label: t.controparte || t.descrizione || t.conto,
+        importo: t.importo,
+        data: t.data,
+      },
+      motivo: '',
+      custom: '',
+    })
+  }
+
+  async function submitIgnora() {
+    if (!ignoraModal) return
+    const motivoFinal = ignoraModal.motivo === 'Altro' ? ignoraModal.custom.trim() : ignoraModal.motivo
+    if (!motivoFinal) {
+      showFeedback('err', 'Seleziona o scrivi una motivazione')
+      return
+    }
+    const ids = ignoraModal.target.kind === 'group'
+      ? ignoraModal.target.group.transazioni.map(t => t.id)
+      : [ignoraModal.target.id]
+    try {
+      const res = await fetch('/api/transazioni/ignora', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transazione_ids: ids, motivo: motivoFinal }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `${ids.length} ${ids.length === 1 ? 'transazione tralasciata' : 'transazioni tralasciate'} (${motivoFinal})`)
+      setIgnoraModal(null)
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
     }
   }
 
   const filteredSoggetti = useMemo(() => soggetti.filter(s => {
-    if (search && !s.denominazione.toLowerCase().includes(search.toLowerCase())) {
-      return false
-    }
+    if (search && !s.denominazione.toLowerCase().includes(search.toLowerCase())) return false
     if (soloNonRiconciliati) {
-      const hasNonRiconciliato =
+      const hasNonRic =
         s.fatture.some(f => f.stato !== 'riconciliata') ||
         s.transazioni.some(t => t.stato !== 'riconciliata')
-      if (!hasNonRiconciliato) return false
+      if (!hasNonRic) return false
     }
     return true
   }), [soggetti, search, soloNonRiconciliati])
@@ -298,6 +370,15 @@ export default function SoggettiPage() {
   const soggettiDenoms = useMemo(
     () => soggetti.map(s => s.denominazione).sort((a, b) => a.localeCompare(b)),
     [soggetti]
+  )
+
+  const orfaneTotal = useMemo(
+    () => orfaneGroups.reduce((s, g) => s + g.totale, 0),
+    [orfaneGroups]
+  )
+  const orfaneCount = useMemo(
+    () => orfaneGroups.reduce((s, g) => s + g.count, 0),
+    [orfaneGroups]
   )
 
   return (
@@ -314,7 +395,6 @@ export default function SoggettiPage() {
         </button>
       </div>
 
-      {/* Feedback toast */}
       {feedback && (
         <div className={`mb-4 px-4 py-2 rounded-md text-sm font-medium ${
           feedback.kind === 'ok'
@@ -325,7 +405,6 @@ export default function SoggettiPage() {
         </div>
       )}
 
-      {/* Search & Filter */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-6 flex gap-4 items-center flex-wrap">
         <input
           type="text"
@@ -345,64 +424,169 @@ export default function SoggettiPage() {
         </label>
       </div>
 
-      {/* Help banner */}
       <div className="bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 rounded-md px-4 py-3 mb-4 text-sm text-indigo-900 dark:text-indigo-100">
         <strong>Suggerimento:</strong> trascina una fattura su una transazione (o viceversa) all&apos;interno dello stesso soggetto per crearne il match. Le transazioni senza soggetto vanno prima assegnate dalla sezione qui sotto.
       </div>
 
-      {/* Orfane section */}
-      {orfane.length > 0 && (
+      {/* Orphan groups */}
+      {orfaneGroups.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow mb-6 border-l-4 border-amber-500">
           <button
             onClick={() => setOrfaneOpen(o => !o)}
             className="w-full px-6 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700"
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 text-left">
               {orfaneOpen ? <ChevronDown className="h-5 w-5 text-amber-500" /> : <ChevronRight className="h-5 w-5 text-amber-500" />}
               <AlertTriangle className="h-5 w-5 text-amber-500" />
-              <div className="text-left">
+              <div>
                 <p className="font-semibold text-gray-900 dark:text-white">
-                  Transazioni senza soggetto ({orfane.length})
+                  Transazioni senza soggetto · {orfaneGroups.length} gruppi · {orfaneCount} transazioni
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Assegna un soggetto per poter poi creare il match con una fattura
+                  Totale aggregato {formatCurrency(orfaneTotal)} · ordinati per importo decrescente
                 </p>
               </div>
             </div>
           </button>
           {orfaneOpen && (
-            <div className="border-t dark:border-gray-700 px-6 py-4 space-y-2 max-h-96 overflow-y-auto">
-              {orfane.map(o => (
-                <div key={o.id} className="flex flex-wrap items-center gap-3 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
-                  <span className="font-medium capitalize text-gray-900 dark:text-white">{o.conto}</span>
-                  <span className="text-gray-500 dark:text-gray-400">{formatDate(o.data)}</span>
-                  <span className={`font-medium ${o.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
-                    {o.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(o.importo))}
-                  </span>
-                  <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={o.controparte || o.descrizione}>
-                    {o.controparte || o.descrizione || <em className="text-gray-400">nessuna descrizione</em>}
-                  </span>
-                  <div className="flex items-center gap-2 ml-auto">
-                    <select
-                      defaultValue=""
-                      onChange={(e) => {
-                        const val = e.target.value
-                        if (val) handleAssignSoggetto(o.id, val)
-                        e.currentTarget.value = ''
-                      }}
-                      className="text-xs border rounded px-2 py-1 dark:bg-gray-800 dark:border-gray-600 dark:text-white max-w-[220px]"
-                    >
-                      <option value="">Assegna a soggetto…</option>
-                      {soggettiDenoms.map(d => (
-                        <option key={d} value={d}>{d}</option>
-                      ))}
-                    </select>
-                    <Link href={`/transazioni?id=${o.id}`}>
-                      <ExternalLink className="h-3 w-3 text-gray-400 hover:text-indigo-600" />
-                    </Link>
+            <div className="border-t dark:border-gray-700 divide-y dark:divide-gray-700">
+              {orfaneGroups.map(group => {
+                const isOpen = expandedGroups.has(group.key)
+                const newInput = newSoggettoInput[group.key] || ''
+                return (
+                  <div key={group.key} className="px-4 py-3">
+                    {/* Group header */}
+                    <div className="flex items-start gap-3 flex-wrap">
+                      <button
+                        onClick={() => toggleGroupExpand(group.key)}
+                        className="mt-1 text-gray-400 hover:text-gray-600"
+                      >
+                        {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-gray-900 dark:text-white truncate" title={group.label}>
+                            {group.label}
+                          </span>
+                          <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-0.5 rounded">
+                            {group.count} {group.count === 1 ? 'transazione' : 'transazioni'}
+                          </span>
+                          <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                            {formatCurrency(group.totale)}
+                          </span>
+                        </div>
+                        {group.varianti.length > 1 && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                            Varianti: {group.varianti.slice(0, 3).join(' · ')}{group.varianti.length > 3 ? ` · +${group.varianti.length - 3}` : ''}
+                          </p>
+                        )}
+
+                        {/* Suggestion */}
+                        {group.suggestion && (
+                          <div className="mt-2 flex items-center gap-2 bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 rounded px-3 py-1.5">
+                            <Sparkles className="h-4 w-4 text-indigo-500" />
+                            <span className="text-sm text-indigo-900 dark:text-indigo-100">
+                              Probabilmente è <strong>{group.suggestion.soggetto}</strong>
+                            </span>
+                            <span className="text-xs bg-indigo-600 text-white px-2 py-0.5 rounded font-semibold">
+                              {group.suggestion.confidence}%
+                            </span>
+                            <button
+                              onClick={() => assignGroupToSoggetto(group, group.suggestion!.soggetto)}
+                              className="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded"
+                            >
+                              <Check className="h-3 w-3" /> Approva
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Actions row */}
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <select
+                            defaultValue=""
+                            onChange={(e) => {
+                              const val = e.target.value
+                              if (val) assignGroupToSoggetto(group, val)
+                              e.currentTarget.value = ''
+                            }}
+                            className="text-xs border rounded px-2 py-1 dark:bg-gray-800 dark:border-gray-600 dark:text-white max-w-[220px]"
+                          >
+                            <option value="">Assegna a soggetto esistente…</option>
+                            {soggettiDenoms.map(d => (
+                              <option key={d} value={d}>{d}</option>
+                            ))}
+                          </select>
+
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="text"
+                              placeholder="Nome nuovo soggetto"
+                              value={newInput}
+                              onChange={(e) => setNewSoggettoInput(prev => ({ ...prev, [group.key]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && newInput.trim()) {
+                                  assignGroupToSoggetto(group, newInput.trim(), true)
+                                  setNewSoggettoInput(prev => ({ ...prev, [group.key]: '' }))
+                                }
+                              }}
+                              className="text-xs border rounded px-2 py-1 dark:bg-gray-800 dark:border-gray-600 dark:text-white w-44"
+                            />
+                            <button
+                              onClick={() => {
+                                if (newInput.trim()) {
+                                  assignGroupToSoggetto(group, newInput.trim(), true)
+                                  setNewSoggettoInput(prev => ({ ...prev, [group.key]: '' }))
+                                }
+                              }}
+                              disabled={!newInput.trim()}
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-medium rounded"
+                              title="Crea nuovo soggetto"
+                            >
+                              <Plus className="h-3 w-3" /> Crea
+                            </button>
+                          </div>
+
+                          <button
+                            onClick={() => openIgnoraGroup(group)}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-xs font-medium rounded"
+                            title="Tralascia tutto il gruppo"
+                          >
+                            <X className="h-3 w-3" /> Tralascia gruppo…
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expanded transactions */}
+                    {isOpen && (
+                      <div className="mt-3 ml-7 space-y-1 max-h-64 overflow-y-auto">
+                        {group.transazioni.map(t => (
+                          <div key={t.id} className="flex items-center gap-3 text-xs bg-gray-50 dark:bg-gray-900 rounded px-2 py-1.5">
+                            <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
+                            <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatDate(t.data)}</span>
+                            <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
+                              {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
+                            </span>
+                            <span className="text-gray-600 dark:text-gray-300 truncate flex-1" title={t.controparte || t.descrizione || ''}>
+                              {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
+                            </span>
+                            <button
+                              onClick={() => openIgnoraSingle(t)}
+                              className="text-gray-400 hover:text-red-600"
+                              title="Tralascia questa transazione (con motivazione)"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                            <Link href={`/transazioni?id=${t.id}`}>
+                              <ExternalLink className="h-3 w-3 text-gray-400 hover:text-indigo-600" />
+                            </Link>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
@@ -416,17 +600,14 @@ export default function SoggettiPage() {
         <div className="space-y-2">
           {filteredSoggetti.map((soggetto) => (
             <div key={soggetto.denominazione} className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
-              {/* Header row - clickable */}
               <div
                 className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
                 onClick={() => toggleExpand(soggetto.denominazione)}
               >
                 <div className="flex items-center gap-3">
-                  {expanded.has(soggetto.denominazione) ? (
-                    <ChevronDown className="h-5 w-5 text-gray-400" />
-                  ) : (
-                    <ChevronRight className="h-5 w-5 text-gray-400" />
-                  )}
+                  {expanded.has(soggetto.denominazione)
+                    ? <ChevronDown className="h-5 w-5 text-gray-400" />
+                    : <ChevronRight className="h-5 w-5 text-gray-400" />}
                   <div>
                     <p className="font-semibold text-gray-900 dark:text-white">{soggetto.denominazione}</p>
                     <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -454,7 +635,6 @@ export default function SoggettiPage() {
                 </div>
               </div>
 
-              {/* Expanded details */}
               {expanded.has(soggetto.denominazione) && (
                 <div className="border-t dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-6 py-4">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -488,9 +668,7 @@ export default function SoggettiPage() {
                                 } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
                               >
                                 <div className="flex items-center gap-2 min-w-0">
-                                  {draggable && (
-                                    <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />
-                                  )}
+                                  {draggable && <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />}
                                   {isLinked && (
                                     <button
                                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleFatturaClick(f, soggetto.transazioni) }}
@@ -563,9 +741,7 @@ export default function SoggettiPage() {
                                 } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
                               >
                                 <div className="flex items-center gap-2 min-w-0">
-                                  {draggable && (
-                                    <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />
-                                  )}
+                                  {draggable && <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />}
                                   {isLinked && (
                                     <button
                                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleTransazioneClick(t) }}
@@ -619,6 +795,92 @@ export default function SoggettiPage() {
               Nessun soggetto trovato
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal: Tralascia con motivazione */}
+      {ignoraModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setIgnoraModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+              Tralascia {ignoraModal.target.kind === 'group' ? 'gruppo' : 'transazione'}
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              {ignoraModal.target.kind === 'group' ? (
+                <>
+                  Stai per tralasciare <strong>{ignoraModal.target.group.count}</strong> transazione/i del gruppo
+                  &laquo;{ignoraModal.target.group.label}&raquo; per un totale di{' '}
+                  <strong>{formatCurrency(ignoraModal.target.group.totale)}</strong>.
+                </>
+              ) : (
+                <>
+                  {ignoraModal.target.label} · {formatDate(ignoraModal.target.data)} ·{' '}
+                  <strong>{formatCurrency(ignoraModal.target.importo)}</strong>
+                </>
+              )}
+            </p>
+
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">
+              Motivazione <span className="text-red-500">*</span>
+            </p>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              {MOTIVI_PREDEFINITI.map(m => (
+                <button
+                  key={m}
+                  onClick={() => setIgnoraModal(prev => prev ? { ...prev, motivo: m } : null)}
+                  className={`text-left px-3 py-2 text-sm rounded border transition ${
+                    ignoraModal.motivo === m
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:border-indigo-400'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+              <button
+                onClick={() => setIgnoraModal(prev => prev ? { ...prev, motivo: 'Altro' } : null)}
+                className={`text-left px-3 py-2 text-sm rounded border transition col-span-2 ${
+                  ignoraModal.motivo === 'Altro'
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:border-indigo-400'
+                }`}
+              >
+                Altro…
+              </button>
+            </div>
+            {ignoraModal.motivo === 'Altro' && (
+              <input
+                type="text"
+                autoFocus
+                placeholder="Scrivi la motivazione…"
+                value={ignoraModal.custom}
+                onChange={(e) => setIgnoraModal(prev => prev ? { ...prev, custom: e.target.value } : null)}
+                className="w-full border rounded-md px-3 py-2 mb-3 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+              />
+            )}
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setIgnoraModal(null)}
+                className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={submitIgnora}
+                disabled={!ignoraModal.motivo || (ignoraModal.motivo === 'Altro' && !ignoraModal.custom.trim())}
+                className="px-4 py-2 rounded-md bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-sm font-medium"
+              >
+                Tralascia
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -40,6 +40,9 @@ export default function RootLayout({
                 <Link href="/riconcilia" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Riconcilia
                 </Link>
+                <Link href="/analisi-2025" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
+                  Analisi 2025
+                </Link>
                 <Link href="/soggetti" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Soggetti
                 </Link>

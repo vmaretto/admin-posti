@@ -14,14 +14,20 @@ function normalizeName(name: string | null): string {
     .trim()
 }
 
-// 0..1 similarity (1 = identical)
+// 0..1 similarity (1 = identical) — computed on simple-lower (trimmed lowercase)
 function similarity(a: string, b: string): number {
   if (!a || !b) return 0
-  if (a === b) return 1
-  const maxLen = Math.max(a.length, b.length)
+  const aa = a.toLowerCase().trim()
+  const bb = b.toLowerCase().trim()
+  if (aa === bb) return 1
+  const maxLen = Math.max(aa.length, bb.length)
   if (maxLen === 0) return 1
-  return 1 - distance(a, b) / maxLen
+  return 1 - distance(aa, bb) / maxLen
 }
+
+// Soglie fuzzy matching
+const FUZZY_AUTO_THRESHOLD = 0.75   // ≥75% → assegna automaticamente (no approva)
+const FUZZY_SUGGEST_THRESHOLD = 0.5  // 50-75% → mostra suggerimento approvabile
 
 export async function GET() {
   const supabase = createServerClient()
@@ -48,7 +54,7 @@ export async function GET() {
     transazioni: any[]
   }>()
 
-  // 1) Process fatture → seed soggetti
+  // 1) Process fatture → seed soggetti (escludendo le tralasciate)
   for (const f of fatture || []) {
     const denom = f.tipo === 'emessa'
       ? f.denominazione_cliente
@@ -60,6 +66,8 @@ export async function GET() {
     if (!soggettiMap.has(key)) {
       soggettiMap.set(key, { originalName: denom, fatture: [], transazioni: [] })
     }
+    // Le fatture tralasciate non vengono mostrate nelle liste del soggetto
+    if (f.stato_riconciliazione === 'non_trovata') continue
     soggettiMap.get(key)!.fatture.push({
       id: f.id,
       numero: f.numero,
@@ -105,13 +113,30 @@ export async function GET() {
       if (denom) key = normalizeName(denom)
     }
 
-    // 3b) Otherwise match by normalized controparte
+    // 3b) Otherwise match by normalized controparte (exact)
     if (!key && t.controparte) {
       const nc = normalizeName(t.controparte)
       if (nc && soggettiMap.has(nc)) key = nc
     }
 
-    if (key && soggettiMap.has(key)) {
+    // 3c) Fuzzy match: similarity tra controparte e displayName di un soggetto ≥ 75%
+    if (!key && t.controparte && t.stato_riconciliazione !== 'non_trovata') {
+      let bestKey = ''
+      let bestSim = 0
+      for (const [sk, sdata] of soggettiMap.entries()) {
+        const sim = similarity(t.controparte, sdata.originalName)
+        if (sim > bestSim) {
+          bestSim = sim
+          bestKey = sk
+        }
+      }
+      if (bestKey && bestSim >= FUZZY_AUTO_THRESHOLD) {
+        key = bestKey
+      }
+    }
+
+    // Le transazioni tralasciate non vanno mostrate nemmeno nei soggetti
+    if (key && soggettiMap.has(key) && t.stato_riconciliazione !== 'non_trovata') {
       soggettiMap.get(key)!.transazioni.push({
         id: t.id,
         importo: Math.abs(t.importo),
@@ -169,31 +194,30 @@ export async function GET() {
     g.items.push(o)
   }
 
-  // Precompute soggetti keys for suggestions
-  const soggettiKeys = Array.from(soggettiMap.keys())
-  const soggettiDisplayByKey = new Map<string, string>()
-  for (const [k, v] of soggettiMap.entries()) soggettiDisplayByKey.set(k, v.originalName)
-
   // Build orfaneGroups with totals + suggestions, sort by total desc
+  // (i soggetti ≥75% sono già stati assegnati sopra dal fuzzy match)
+  const soggettiEntries = Array.from(soggettiMap.values())
+
   const orfaneGroups = Array.from(groupMap.entries()).map(([key, g]) => {
     const totale = g.items.reduce((s, x) => s + x.importo, 0)
     const count = g.items.length
 
-    // Suggest best matching existing soggetto (similarity ≥ 0.6)
+    // Suggerimento: best soggetto via similarity sui nomi ORIGINALI
     let suggestion: { soggetto: string; confidence: number } | null = null
     if (key !== '__SENZA_DESCR__') {
-      let bestKey = ''
+      let bestName = ''
       let bestSim = 0
-      for (const sk of soggettiKeys) {
-        const sim = similarity(key, sk)
+      for (const s of soggettiEntries) {
+        const sim = similarity(g.label, s.originalName)
         if (sim > bestSim) {
           bestSim = sim
-          bestKey = sk
+          bestName = s.originalName
         }
       }
-      if (bestKey && bestSim >= 0.6 && bestSim < 1) {
+      // Mostra suggerimento solo nella fascia 50-75% (sopra il 75% è già stato auto-assegnato)
+      if (bestName && bestSim >= FUZZY_SUGGEST_THRESHOLD && bestSim < FUZZY_AUTO_THRESHOLD) {
         suggestion = {
-          soggetto: soggettiDisplayByKey.get(bestKey) || bestKey,
+          soggetto: bestName,
           confidence: Math.round(bestSim * 100),
         }
       }

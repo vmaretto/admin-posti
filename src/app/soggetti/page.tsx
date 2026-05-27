@@ -130,10 +130,19 @@ export default function SoggettiPage() {
   // For "Crea nuovo soggetto" per group
   const [newSoggettoInput, setNewSoggettoInput] = useState<Record<string, string>>({})
 
+  // Modal "Match con nota opzionale"
+  const [matchModal, setMatchModal] = useState<{
+    fatturaId: string
+    transazioneId: string
+    soggetto: string
+    note: string
+  } | null>(null)
+
   // Modal "Tralascia con motivazione"
   type IgnoraTarget =
     | { kind: 'group'; group: OrfanaGroup }
-    | { kind: 'single'; id: string; label: string; importo: number; data: string }
+    | { kind: 'trans'; id: string; label: string; importo: number; data: string }
+    | { kind: 'fattura'; id: string; label: string; importo: number; data: string }
   const [ignoraModal, setIgnoraModal] = useState<{ target: IgnoraTarget; motivo: string; custom: string } | null>(null)
 
   const MOTIVI_PREDEFINITI = [
@@ -251,15 +260,27 @@ export default function SoggettiPage() {
     }
     const fatturaId = src.kind === 'fattura' ? src.id : target.id
     const transazioneId = src.kind === 'transazione' ? src.id : target.id
+    // Apri il modal per chiedere una nota (opzionale)
+    setMatchModal({ fatturaId, transazioneId, soggetto: target.soggetto, note: '' })
+  }
+
+  async function confirmMatch(skipNote = false) {
+    if (!matchModal) return
     try {
+      const body: { fatturaId: string; transazioneId: string; note?: string } = {
+        fatturaId: matchModal.fatturaId,
+        transazioneId: matchModal.transazioneId,
+      }
+      if (!skipNote && matchModal.note.trim()) body.note = matchModal.note.trim()
       const res = await fetch('/api/riconcilia', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fatturaId, transazioneId }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', 'Match creato')
+      showFeedback('ok', body.note ? 'Match creato con nota' : 'Match creato')
+      setMatchModal(null)
       await load()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Errore nel match'
@@ -316,14 +337,28 @@ export default function SoggettiPage() {
     setIgnoraModal({ target: { kind: 'group', group }, motivo: '', custom: '' })
   }
 
-  function openIgnoraSingle(t: Orfana) {
+  function openIgnoraTrans(t: Orfana | Transazione, controparte?: string) {
     setIgnoraModal({
       target: {
-        kind: 'single',
+        kind: 'trans',
         id: t.id,
-        label: t.controparte || t.descrizione || t.conto,
+        label: ('controparte' in t ? t.controparte : controparte) || (t as Orfana).descrizione || t.conto,
         importo: t.importo,
         data: t.data,
+      },
+      motivo: '',
+      custom: '',
+    })
+  }
+
+  function openIgnoraFattura(f: Fattura) {
+    setIgnoraModal({
+      target: {
+        kind: 'fattura',
+        id: f.id,
+        label: f.numero,
+        importo: f.totale,
+        data: f.data,
       },
       motivo: '',
       custom: '',
@@ -337,18 +372,36 @@ export default function SoggettiPage() {
       showFeedback('err', 'Seleziona o scrivi una motivazione')
       return
     }
-    const ids = ignoraModal.target.kind === 'group'
-      ? ignoraModal.target.group.transazioni.map(t => t.id)
-      : [ignoraModal.target.id]
     try {
-      const res = await fetch('/api/transazioni/ignora', {
+      let url = ''
+      let body: object = {}
+      let count = 0
+      let label = ''
+      if (ignoraModal.target.kind === 'group') {
+        url = '/api/transazioni/ignora'
+        const ids = ignoraModal.target.group.transazioni.map(t => t.id)
+        body = { transazione_ids: ids, motivo: motivoFinal }
+        count = ids.length
+        label = count === 1 ? 'transazione tralasciata' : 'transazioni tralasciate'
+      } else if (ignoraModal.target.kind === 'trans') {
+        url = '/api/transazioni/ignora'
+        body = { transazione_ids: [ignoraModal.target.id], motivo: motivoFinal }
+        count = 1
+        label = 'transazione tralasciata'
+      } else {
+        url = '/api/fatture/ignora'
+        body = { fattura_ids: [ignoraModal.target.id], motivo: motivoFinal }
+        count = 1
+        label = 'fattura tralasciata'
+      }
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transazione_ids: ids, motivo: motivoFinal }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', `${ids.length} ${ids.length === 1 ? 'transazione tralasciata' : 'transazioni tralasciate'} (${motivoFinal})`)
+      showFeedback('ok', `${count} ${label} (${motivoFinal})`)
       setIgnoraModal(null)
       await load()
     } catch (err: unknown) {
@@ -571,7 +624,7 @@ export default function SoggettiPage() {
                               {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
                             </span>
                             <button
-                              onClick={() => openIgnoraSingle(t)}
+                              onClick={() => openIgnoraTrans(t)}
                               className="text-gray-400 hover:text-red-600"
                               title="Tralascia questa transazione (con motivazione)"
                             >
@@ -694,13 +747,21 @@ export default function SoggettiPage() {
                                     'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
                                   }`}>{f.stato.replace('_', ' ')}</span>
                                   <span className="font-medium text-gray-900 dark:text-white whitespace-nowrap">{formatCurrency(f.totale)}</span>
-                                  {isLinked && (
+                                  {isLinked ? (
                                     <button
                                       onClick={(e) => { e.stopPropagation(); handleUnmatch(f.id) }}
                                       className="text-gray-400 hover:text-red-600"
                                       title="Scollega"
                                     >
                                       <Unlink className="h-3.5 w-3.5" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); openIgnoraFattura(f) }}
+                                      className="text-gray-400 hover:text-amber-600"
+                                      title="Tralascia con motivazione"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
                                     </button>
                                   )}
                                 </div>
@@ -768,13 +829,21 @@ export default function SoggettiPage() {
                                   <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
                                     {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
                                   </span>
-                                  {isLinked && t.fatture_ids && t.fatture_ids[0] && (
+                                  {isLinked && t.fatture_ids && t.fatture_ids[0] ? (
                                     <button
                                       onClick={(e) => { e.stopPropagation(); handleUnmatch(t.fatture_ids![0]) }}
                                       className="text-gray-400 hover:text-red-600"
                                       title="Scollega"
                                     >
                                       <Unlink className="h-3.5 w-3.5" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); openIgnoraTrans(t, soggetto.denominazione) }}
+                                      className="text-gray-400 hover:text-amber-600"
+                                      title="Tralascia con motivazione"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
                                     </button>
                                   )}
                                 </div>
@@ -798,6 +867,62 @@ export default function SoggettiPage() {
         </div>
       )}
 
+      {/* Modal: Conferma match con nota opzionale */}
+      {matchModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setMatchModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+              Conferma match
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Stai per collegare una fattura a una transazione del soggetto{' '}
+              <strong>{matchModal.soggetto}</strong>.
+            </p>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+              Nota (opzionale)
+            </label>
+            <input
+              type="text"
+              autoFocus
+              placeholder="es. Pagamento parziale, in attesa di nota credito…"
+              value={matchModal.note}
+              onChange={(e) => setMatchModal(prev => prev ? { ...prev, note: e.target.value } : null)}
+              onKeyDown={(e) => { if (e.key === 'Enter') confirmMatch() }}
+              className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+            />
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              La nota viene salvata nelle note della fattura come <code>[Match: …]</code>.
+            </p>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setMatchModal(null)}
+                className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={() => confirmMatch(true)}
+                className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-100 text-sm font-medium"
+              >
+                Salta nota
+              </button>
+              <button
+                onClick={() => confirmMatch()}
+                className="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium"
+              >
+                Conferma match
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal: Tralascia con motivazione */}
       {ignoraModal && (
         <div
@@ -809,7 +934,9 @@ export default function SoggettiPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
-              Tralascia {ignoraModal.target.kind === 'group' ? 'gruppo' : 'transazione'}
+              {ignoraModal.target.kind === 'group' && 'Tralascia gruppo'}
+              {ignoraModal.target.kind === 'trans' && 'Tralascia transazione'}
+              {ignoraModal.target.kind === 'fattura' && 'Tralascia fattura'}
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
               {ignoraModal.target.kind === 'group' ? (
@@ -820,6 +947,7 @@ export default function SoggettiPage() {
                 </>
               ) : (
                 <>
+                  {ignoraModal.target.kind === 'fattura' && 'Fattura '}
                   {ignoraModal.target.label} · {formatDate(ignoraModal.target.data)} ·{' '}
                   <strong>{formatCurrency(ignoraModal.target.importo)}</strong>
                 </>

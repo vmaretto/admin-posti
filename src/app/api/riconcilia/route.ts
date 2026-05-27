@@ -31,15 +31,15 @@ function namesMatch(name1: string | null | undefined, name2: string | null | und
   return false
 }
 
-// POST: Collega una fattura a una transazione
+// POST: Collega una fattura a una transazione (con nota opzionale)
 export async function POST(request: NextRequest) {
   const supabase = createServerClient()
-  const { fatturaId, transazioneId } = await request.json()
-  
+  const { fatturaId, transazioneId, note } = await request.json()
+
   if (!fatturaId || !transazioneId) {
     return NextResponse.json({ error: 'Missing fatturaId or transazioneId' }, { status: 400 })
   }
-  
+
   // Inserisci in tabella riconciliazioni (N:1 supportato)
   const { error: errRic } = await supabase
     .from('riconciliazioni')
@@ -52,13 +52,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: errRic.message }, { status: 500 })
   }
 
+  // Prepara update fattura
+  const updateFattura: Record<string, unknown> = {
+    stato_riconciliazione: 'riconciliata',
+    transazione_id: transazioneId,
+  }
+  // Se c'è una nota, append in fatture.note come [Match: <nota>]
+  if (note && typeof note === 'string' && note.trim()) {
+    const { data: existing } = await supabase
+      .from('fatture')
+      .select('note')
+      .eq('id', fatturaId)
+      .single()
+    const tag = `[Match: ${note.trim()}]`
+    const prev = existing?.note?.trim()
+    updateFattura.note = prev ? `${tag}\n${prev}` : tag
+  }
+
   // Aggiorna stato fattura E imposta transazione_id (la vista Soggetti legge da qui)
   await supabase
     .from('fatture')
-    .update({
-      stato_riconciliazione: 'riconciliata',
-      transazione_id: transazioneId,
-    })
+    .update(updateFattura)
     .eq('id', fatturaId)
 
   // Aggiorna stato transazione

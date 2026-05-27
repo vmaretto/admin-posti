@@ -155,6 +155,9 @@ function NotaCreditoBadge({ tipoDocumento }: { tipoDocumento?: string }) {
 export default function SoggettiPage() {
   const [soggetti, setSoggetti] = useState<Soggetto[]>([])
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
+  const [tralasciati, setTralasciati] = useState<{ fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }>({ fatture: [], transazioni: [] })
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  const [tralasciatiOpen, setTralasciatiOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
@@ -187,6 +190,7 @@ export default function SoggettiPage() {
     | { kind: 'trans'; id: string; label: string; importo: number; data: string }
     | { kind: 'fattura'; id: string; label: string; importo: number; data: string }
     | { kind: 'soggetto'; soggetto: Soggetto }
+    | { kind: 'multi-soggetto'; soggetti: Soggetto[] }
   const [ignoraModal, setIgnoraModal] = useState<{ target: IgnoraTarget; motivo: string; custom: string } | null>(null)
 
   // Modal "Accorpa soggetti"
@@ -214,6 +218,7 @@ export default function SoggettiPage() {
       const data: SoggettiResponse = await res.json()
       setSoggetti(data.soggetti || [])
       setOrfaneGroups(data.orfaneGroups || [])
+      setTralasciati(data.tralasciati || { fatture: [], transazioni: [] })
     } catch (e) {
       console.error(e)
       showFeedback('err', 'Errore nel caricamento')
@@ -221,6 +226,59 @@ export default function SoggettiPage() {
       setLoading(false)
     }
   }, [])
+
+  function toggleSelectSoggetto(key: string) {
+    setSelectedKeys(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function selezionaTuttiVisibili() {
+    setSelectedKeys(new Set(filteredSoggetti.map(s => s.key)))
+  }
+
+  function deselezionaTutti() {
+    setSelectedKeys(new Set())
+  }
+
+  function openIgnoraSelezionati() {
+    if (selectedKeys.size === 0) return
+    const selezionati = soggetti.filter(s => selectedKeys.has(s.key))
+    if (selezionati.length === 0) return
+    // Riusa il modal ignora con un kind multi
+    setIgnoraModal({
+      target: { kind: 'multi-soggetto', soggetti: selezionati },
+      motivo: '',
+      custom: '',
+    })
+  }
+
+  async function ripristinaFattura(id: string) {
+    try {
+      const res = await fetch(`/api/fatture/ignora?ids=${id}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', 'Fattura ripristinata')
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
+
+  async function ripristinaTransazione(id: string) {
+    try {
+      const res = await fetch(`/api/transazioni/ignora?ids=${id}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', 'Transazione ripristinata')
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
 
   useEffect(() => {
     load()
@@ -430,7 +488,7 @@ export default function SoggettiPage() {
       const res = await fetch('/api/soggetti/merge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: mergeModal.from.denominazione, to: mergeModal.toDenom }),
+        body: JSON.stringify({ from_key: mergeModal.from.key, to: mergeModal.toDenom }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
@@ -450,6 +508,38 @@ export default function SoggettiPage() {
       return
     }
     try {
+      if (ignoraModal.target.kind === 'multi-soggetto') {
+        // Tralascia molti soggetti in batch
+        const fattureIds = ignoraModal.target.soggetti.flatMap(s => s.fatture.map(f => f.id))
+        const transIds = ignoraModal.target.soggetti.flatMap(s => s.transazioni.map(t => t.id))
+        const calls: Promise<Response>[] = []
+        if (fattureIds.length > 0) {
+          calls.push(fetch('/api/fatture/ignora', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fattura_ids: fattureIds, motivo: motivoFinal }),
+          }))
+        }
+        if (transIds.length > 0) {
+          calls.push(fetch('/api/transazioni/ignora', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transazione_ids: transIds, motivo: motivoFinal }),
+          }))
+        }
+        const results = await Promise.all(calls)
+        for (const r of results) {
+          if (!r.ok) {
+            const d = await r.json().catch(() => ({}))
+            throw new Error(d.error || `Errore ${r.status}`)
+          }
+        }
+        const n = ignoraModal.target.soggetti.length
+        showFeedback('ok', `${n} soggetti tralasciati: ${fattureIds.length} fatture + ${transIds.length} transazioni (${motivoFinal})`)
+        setIgnoraModal(null)
+        setSelectedKeys(new Set())
+        await load()
+        return
+      }
+
       if (ignoraModal.target.kind === 'soggetto') {
         // Tralascia intero soggetto: batch su fatture e transazioni in parallelo
         const fattureIds = ignoraModal.target.soggetto.fatture.map(f => f.id)
@@ -521,10 +611,12 @@ export default function SoggettiPage() {
   const filteredSoggetti = useMemo(() => soggetti.filter(s => {
     if (search && !s.denominazione.toLowerCase().includes(search.toLowerCase())) return false
     if (soloNonRiconciliati) {
-      const hasNonRic =
-        s.fatture.some(f => f.stato !== 'riconciliata') ||
-        s.transazioni.some(t => t.stato !== 'riconciliata')
-      if (!hasNonRic) return false
+      // Mostra solo soggetti che hanno almeno una fattura o transazione "da_riconciliare"
+      // (le riconciliate e le tralasciate non contano).
+      const hasDaRic =
+        s.fatture.some(f => f.stato === 'da_riconciliare') ||
+        s.transazioni.some(t => t.stato === 'da_riconciliare')
+      if (!hasDaRic) return false
     }
     return true
   }), [soggetti, search, soloNonRiconciliati])
@@ -564,6 +656,35 @@ export default function SoggettiPage() {
             : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
         }`}>
           {feedback.text}
+        </div>
+      )}
+
+      {/* Selection toolbar */}
+      {selectedKeys.size > 0 && (
+        <div className="sticky top-2 z-40 mb-4 bg-indigo-600 text-white rounded-md shadow-lg px-4 py-2 flex items-center justify-between gap-4 flex-wrap">
+          <span className="font-medium text-sm">
+            {selectedKeys.size} {selectedKeys.size === 1 ? 'soggetto selezionato' : 'soggetti selezionati'}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={selezionaTuttiVisibili}
+              className="px-3 py-1 bg-indigo-500 hover:bg-indigo-400 rounded text-xs font-medium"
+            >
+              Seleziona tutti i visibili
+            </button>
+            <button
+              onClick={deselezionaTutti}
+              className="px-3 py-1 bg-indigo-500 hover:bg-indigo-400 rounded text-xs font-medium"
+            >
+              Deseleziona
+            </button>
+            <button
+              onClick={openIgnoraSelezionati}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-amber-500 hover:bg-amber-400 text-white rounded text-xs font-medium"
+            >
+              <Trash2 className="h-3 w-3" /> Tralascia selezionati…
+            </button>
+          </div>
         </div>
       )}
 
@@ -761,12 +882,20 @@ export default function SoggettiPage() {
       ) : (
         <div className="space-y-2">
           {filteredSoggetti.map((soggetto) => (
-            <div key={soggetto.denominazione} className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+            <div key={soggetto.key} className={`bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden ${selectedKeys.has(soggetto.key) ? 'ring-2 ring-indigo-500' : ''}`}>
               <div
                 className="px-6 py-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
                 onClick={() => toggleExpand(soggetto.denominazione)}
               >
                 <div className="flex items-center gap-3 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={selectedKeys.has(soggetto.key)}
+                    onChange={(e) => { e.stopPropagation(); toggleSelectSoggetto(soggetto.key) }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 flex-shrink-0"
+                    title="Seleziona per azioni in batch"
+                  />
                   {expanded.has(soggetto.denominazione)
                     ? <ChevronDown className="h-5 w-5 text-gray-400 flex-shrink-0" />
                     : <ChevronRight className="h-5 w-5 text-gray-400 flex-shrink-0" />}
@@ -998,6 +1127,95 @@ export default function SoggettiPage() {
         </div>
       )}
 
+      {/* Sezione Tralasciati */}
+      {(tralasciati.fatture.length > 0 || tralasciati.transazioni.length > 0) && (
+        <div className="mt-6 bg-white dark:bg-gray-800 rounded-lg shadow border-l-4 border-gray-400">
+          <button
+            onClick={() => setTralasciatiOpen(o => !o)}
+            className="w-full px-6 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            <div className="flex items-center gap-3 text-left">
+              {tralasciatiOpen ? <ChevronDown className="h-5 w-5 text-gray-500" /> : <ChevronRight className="h-5 w-5 text-gray-500" />}
+              <Archive className="h-5 w-5 text-gray-500" />
+              <div>
+                <p className="font-semibold text-gray-900 dark:text-white">
+                  Tralasciati · {tralasciati.fatture.length} fatture · {tralasciati.transazioni.length} transazioni
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Voci escluse dalla riconciliazione, con motivazione registrata. Puoi ripristinarle.
+                </p>
+              </div>
+            </div>
+          </button>
+          {tralasciatiOpen && (
+            <div className="border-t dark:border-gray-700 px-6 py-4">
+              {tralasciati.fatture.length > 0 && (
+                <div className="mb-4">
+                  <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Fatture tralasciate</h4>
+                  <div className="space-y-1 max-h-72 overflow-y-auto">
+                    {tralasciati.fatture.map(f => (
+                      <div key={f.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
+                        <TipoFatturaBadge tipo={f.tipo} />
+                        <NotaCreditoBadge tipoDocumento={f.tipo_documento} />
+                        <Link href={`/fatture?id=${f.id}`} className="font-medium hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400">
+                          {f.numero}
+                        </Link>
+                        <span className="text-gray-500 dark:text-gray-400">{formatDate(f.data)}</span>
+                        <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={f.denominazione}>{f.denominazione}</span>
+                        <span className="font-medium text-gray-900 dark:text-white">{formatCurrency(f.totale)}</span>
+                        {f.motivo && (
+                          <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" title={f.motivo}>
+                            {f.motivo}
+                          </span>
+                        )}
+                        <button
+                          onClick={() => ripristinaFattura(f.id)}
+                          className="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 text-xs font-medium rounded"
+                          title="Annulla tralascio"
+                        >
+                          <RotateCcw className="h-3 w-3" /> Ripristina
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {tralasciati.transazioni.length > 0 && (
+                <div>
+                  <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Transazioni tralasciate</h4>
+                  <div className="space-y-1 max-h-72 overflow-y-auto">
+                    {tralasciati.transazioni.map(t => (
+                      <div key={t.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
+                        <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
+                        <span className="text-gray-500 dark:text-gray-400">{formatDate(t.data)}</span>
+                        <span className={`font-medium ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
+                          {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
+                        </span>
+                        <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={t.controparte || t.descrizione || ''}>
+                          {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
+                        </span>
+                        {t.motivo && (
+                          <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" title={t.motivo}>
+                            {t.motivo}
+                          </span>
+                        )}
+                        <button
+                          onClick={() => ripristinaTransazione(t.id)}
+                          className="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 text-xs font-medium rounded"
+                          title="Annulla tralascio"
+                        >
+                          <RotateCcw className="h-3 w-3" /> Ripristina
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Modal: Accorpa soggetti */}
       {mergeModal && (
         <div
@@ -1121,6 +1339,7 @@ export default function SoggettiPage() {
               {ignoraModal.target.kind === 'trans' && 'Tralascia transazione'}
               {ignoraModal.target.kind === 'fattura' && 'Tralascia fattura'}
               {ignoraModal.target.kind === 'soggetto' && 'Tralascia intero soggetto'}
+              {ignoraModal.target.kind === 'multi-soggetto' && `Tralascia ${ignoraModal.target.soggetti.length} soggetti`}
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
               {ignoraModal.target.kind === 'group' && (
@@ -1136,6 +1355,12 @@ export default function SoggettiPage() {
                   {ignoraModal.target.soggetto.fatture.length} fatture e{' '}
                   {ignoraModal.target.soggetto.transazioni.length} transazioni verranno marcate come tralasciate
                   con questa motivazione.
+                </>
+              )}
+              {ignoraModal.target.kind === 'multi-soggetto' && (
+                <>
+                  Stai per tralasciare <strong>{ignoraModal.target.soggetti.length}</strong> soggetti.
+                  Tutte le loro fatture e transazioni verranno marcate come tralasciate con la stessa motivazione.
                 </>
               )}
               {(ignoraModal.target.kind === 'trans' || ignoraModal.target.kind === 'fattura') && (

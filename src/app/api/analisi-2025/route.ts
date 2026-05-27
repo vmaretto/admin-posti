@@ -18,6 +18,7 @@ type FatturaRow = {
   denominazione_cliente: string | null
   denominazione_fornitore: string | null
   fonte: string | null
+  transazione_id?: string | null
 }
 
 type TransazioneRow = {
@@ -30,6 +31,17 @@ type TransazioneRow = {
   conto: string | null
   stato_riconciliazione: string | null
   fattura_id?: string | null
+}
+
+type RiconciliazioneRow = {
+  fattura_id: string | null
+  transazione_id: string | null
+}
+
+type MonthBucket = {
+  month: string
+  count: number
+  amount: number
 }
 
 type CoverageSummary = {
@@ -47,31 +59,58 @@ type BankAccountCoverage = CoverageSummary & {
   uscite: number
 }
 
+type InvoiceLite = {
+  id: string
+  numero: string | null
+  data: string | null
+  amount: number
+  subject: string
+  stato: string | null
+  matched_transaction_ids: string[]
+}
+
+type TransactionLite = {
+  id: string
+  data: string | null
+  amount: number
+  tipo: string | null
+  conto: string | null
+  controparte: string
+  descrizione: string | null
+  stato: string | null
+  matched_invoice_ids: string[]
+  matched_invoices: InvoiceLite[]
+  ok_without_invoice: boolean
+}
+
 type InvoiceCoverage = CoverageSummary & {
   tipo: TipoFattura | 'estero'
-  first_number: string | null
-  last_number: string | null
-  last_subject: string | null
-  gaps: string[]
   by_month: MonthBucket[]
+  by_supplier: SupplierInvoiceCoverage[]
+  unmatched: InvoiceLite[]
 }
 
-type MonthBucket = {
-  month: string
-  count: number
-  amount: number
-}
-
-type MissingDocumentCandidate = {
+type SupplierInvoiceCoverage = CoverageSummary & {
   subject: string
-  kind: 'possibile_fattura_passiva' | 'possibile_fattura_estera' | 'da_classificare'
-  amount: number
-  count: number
-  first_date: string | null
-  last_date: string | null
+  normalized_subject: string
+  months_present: string[]
+  months_missing: string[]
+  invoices: InvoiceLite[]
+  unmatched: InvoiceLite[]
+}
+
+type TransactionSupplierGroup = CoverageSummary & {
+  subject: string
+  normalized_subject: string
+  descriptions: string[]
   accounts: string[]
-  reason: string
-  priority: 'alta' | 'media' | 'bassa'
+  entrate: number
+  uscite: number
+  riconciliate: number
+  aperte: number
+  ok_without_invoice_count: number
+  transactions: TransactionLite[]
+  unmatched_invoices: InvoiceLite[]
 }
 
 const START = '2025-01-01'
@@ -90,8 +129,8 @@ function invoiceTotal(fattura: FatturaRow): number {
   return absAmount(fattura.totale) || absAmount(fattura.imponibile) + absAmount(fattura.imposta)
 }
 
-function isOpen(stato: string | null | undefined): boolean {
-  return stato !== 'riconciliata'
+function isReconciled(stato: string | null | undefined): boolean {
+  return stato === 'riconciliata'
 }
 
 function monthOf(date: string | null | undefined): string | null {
@@ -99,7 +138,14 @@ function monthOf(date: string | null | undefined): string | null {
 }
 
 function cleanSubject(value: string | null | undefined): string {
-  return (value || 'Soggetto non indicato').replace(/\s+/g, ' ').trim()
+  const cleaned = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!cleaned || ['false', 'null', 'undefined'].includes(cleaned.toLowerCase())) return 'Soggetto non indicato'
+  return cleaned
+}
+
+function cleanDescription(value: string | null | undefined): string | null {
+  const cleaned = cleanSubject(value)
+  return cleaned === 'Soggetto non indicato' ? null : cleaned
 }
 
 function normalizeSubject(value: string | null | undefined): string {
@@ -165,11 +211,80 @@ function summarizeTransactions(rows: TransazioneRow[]): CoverageSummary {
   }
 }
 
-function summarizeInvoices(rows: FatturaRow[], tipo: TipoFattura | 'estero'): InvoiceCoverage {
+function invoiceLite(fattura: FatturaRow, matchesByInvoice: Map<string, Set<string>>): InvoiceLite {
+  return {
+    id: fattura.id,
+    numero: fattura.numero,
+    data: fattura.data_emissione,
+    amount: invoiceTotal(fattura),
+    subject: subjectForInvoice(fattura),
+    stato: fattura.stato_riconciliazione,
+    matched_transaction_ids: Array.from(matchesByInvoice.get(fattura.id) || []),
+  }
+}
+
+function transactionLite(
+  transazione: TransazioneRow,
+  invoicesByTransaction: Map<string, FatturaRow[]>,
+  matchesByInvoice: Map<string, Set<string>>,
+): TransactionLite {
+  const matchedInvoices = invoicesByTransaction.get(transazione.id) || []
+  const matchedInvoiceIds = Array.from(new Set(matchedInvoices.map((f) => f.id)))
+  return {
+    id: transazione.id,
+    data: transazione.data,
+    amount: absAmount(transazione.importo),
+    tipo: transazione.tipo,
+    conto: transazione.conto,
+    controparte: subjectForTransaction(transazione),
+    descrizione: cleanDescription(transazione.descrizione),
+    stato: transazione.stato_riconciliazione,
+    matched_invoice_ids: matchedInvoiceIds,
+    matched_invoices: matchedInvoices.map((f) => invoiceLite(f, matchesByInvoice)),
+    ok_without_invoice: isReconciled(transazione.stato_riconciliazione) && matchedInvoiceIds.length === 0,
+  }
+}
+
+function buildInvoiceCoverage(
+  rows: FatturaRow[],
+  tipo: TipoFattura | 'estero',
+  matchesByInvoice: Map<string, Set<string>>,
+): InvoiceCoverage {
   const present = monthsPresent(rows, 'data_emissione')
-  const sorted = [...rows].sort((a, b) => String(a.data_emissione || '').localeCompare(String(b.data_emissione || '')))
-  const first = sorted[0]
-  const last = sorted[sorted.length - 1]
+  const bySupplierMap = new Map<string, FatturaRow[]>()
+
+  for (const row of rows) {
+    const subject = subjectForInvoice(row)
+    const key = normalizeSubject(subject) || subject.toLowerCase()
+    bySupplierMap.set(key, [...(bySupplierMap.get(key) || []), row])
+  }
+
+  const bySupplier: SupplierInvoiceCoverage[] = Array.from(bySupplierMap.entries())
+    .map(([key, supplierRows]) => {
+      const supplierPresent = monthsPresent(supplierRows, 'data_emissione')
+      const invoices = supplierRows
+        .map((row) => invoiceLite(row, matchesByInvoice))
+        .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')))
+      const unmatched = invoices.filter((invoice) => !isReconciled(invoice.stato) || invoice.matched_transaction_ids.length === 0)
+      return {
+        subject: subjectForInvoice(supplierRows[0]),
+        normalized_subject: key,
+        count: supplierRows.length,
+        amount: supplierRows.reduce((sum, row) => sum + invoiceTotal(row), 0),
+        first_date: minDate(supplierRows, 'data_emissione'),
+        last_date: maxDate(supplierRows, 'data_emissione'),
+        months_present: supplierPresent,
+        months_missing: missingMonths(supplierPresent),
+        invoices,
+        unmatched,
+      }
+    })
+    .sort((a, b) => b.amount - a.amount)
+
+  const allInvoices = rows.map((row) => invoiceLite(row, matchesByInvoice))
+  const unmatched = allInvoices
+    .filter((invoice) => !isReconciled(invoice.stato) || invoice.matched_transaction_ids.length === 0)
+    .sort((a, b) => b.amount - a.amount)
 
   return {
     tipo,
@@ -177,124 +292,101 @@ function summarizeInvoices(rows: FatturaRow[], tipo: TipoFattura | 'estero'): In
     amount: rows.reduce((sum, row) => sum + invoiceTotal(row), 0),
     first_date: minDate(rows, 'data_emissione'),
     last_date: maxDate(rows, 'data_emissione'),
-    first_number: first?.numero || null,
-    last_number: last?.numero || null,
-    last_subject: last ? subjectForInvoice(last) : null,
     months_present: present,
     months_missing: missingMonths(present),
-    gaps: detectInvoiceNumberGaps(rows),
     by_month: monthBuckets(rows, (row) => row.data_emissione, invoiceTotal),
+    by_supplier: bySupplier,
+    unmatched,
   }
 }
 
-function detectInvoiceNumberGaps(rows: FatturaRow[]): string[] {
-  const byYear = new Map<string, number[]>()
-
-  for (const row of rows) {
-    if (!row.numero || !row.data_emissione) continue
-    const year = row.data_emissione.slice(0, 4)
-    const numberMatch = row.numero.match(/\d+/)
-    if (!numberMatch) continue
-    const n = Number(numberMatch[0])
-    if (!Number.isFinite(n)) continue
-    byYear.set(year, [...(byYear.get(year) || []), n])
-  }
-
-  const gaps: string[] = []
-  for (const [year, numbers] of byYear.entries()) {
-    const unique = Array.from(new Set(numbers)).sort((a, b) => a - b)
-    if (unique.length < 3) continue
-
-    const missing: number[] = []
-    for (let n = unique[0]; n <= unique[unique.length - 1]; n++) {
-      if (!unique.includes(n)) missing.push(n)
-      if (missing.length >= 10) break
-    }
-
-    if (missing.length > 0) {
-      gaps.push(`${year}: possibili numeri mancanti ${missing.join(', ')}${missing.length >= 10 ? '…' : ''}`)
+function buildTransactionGroups(
+  transazioni: TransazioneRow[],
+  fatture: FatturaRow[],
+  invoicesByTransaction: Map<string, FatturaRow[]>,
+  matchesByInvoice: Map<string, Set<string>>,
+): TransactionSupplierGroup[] {
+  const invoiceGroups = new Map<string, InvoiceLite[]>()
+  for (const fattura of fatture) {
+    const subject = subjectForInvoice(fattura)
+    const key = normalizeSubject(subject) || subject.toLowerCase()
+    const lite = invoiceLite(fattura, matchesByInvoice)
+    if (!isReconciled(lite.stato) || lite.matched_transaction_ids.length === 0) {
+      invoiceGroups.set(key, [...(invoiceGroups.get(key) || []), lite])
     }
   }
-
-  return gaps
-}
-
-function isLikelyForeignSupplier(subject: string): boolean {
-  const s = subject.toLowerCase()
-  return [
-    'ireland', 'ltd', 'limited', 'gmbh', 'sarl', 'amazon', 'google', 'meta', 'facebook', 'openai',
-    'apple', 'microsoft', 'stripe', 'notion', 'linkedin', 'zoom', 'adobe', 'dropbox', 'github',
-    'canva', 'figma', 'wise', 'paypal', 'hetzner', 'ovh', 'digitalocean', 'vercel', 'anthropic',
-  ].some((keyword) => s.includes(keyword))
-}
-
-function priorityFor(amountTotal: number): 'alta' | 'media' | 'bassa' {
-  if (amountTotal >= 1000) return 'alta'
-  if (amountTotal >= 250) return 'media'
-  return 'bassa'
-}
-
-function buildMissingCandidates(transazioni: TransazioneRow[], fatture: FatturaRow[]): MissingDocumentCandidate[] {
-  const invoiceSubjects = new Set(
-    fatture
-      .filter((f) => f.tipo === 'ricevuta' || f.fonte === 'estero')
-      .map(subjectForInvoice)
-      .map(normalizeSubject)
-      .filter(Boolean),
-  )
 
   const groups = new Map<string, TransazioneRow[]>()
-  for (const t of transazioni) {
-    if (t.tipo !== 'uscita') continue
-    if (!isOpen(t.stato_riconciliazione)) continue
-    const subject = subjectForTransaction(t)
+  for (const transazione of transazioni) {
+    const subject = subjectForTransaction(transazione)
     const key = normalizeSubject(subject) || subject.toLowerCase()
-    groups.set(key, [...(groups.get(key) || []), t])
+    groups.set(key, [...(groups.get(key) || []), transazione])
   }
 
   return Array.from(groups.entries())
     .map(([key, rows]) => {
-      const subject = subjectForTransaction(rows[0])
-      const amountTotal = rows.reduce((sum, row) => sum + absAmount(row.importo), 0)
-      const hasInvoiceSubject = Array.from(invoiceSubjects).some((invoiceSubject) => {
-        if (!key || !invoiceSubject) return false
-        return key.includes(invoiceSubject) || invoiceSubject.includes(key)
-      })
-      const foreign = isLikelyForeignSupplier(subject)
-      const kind: MissingDocumentCandidate['kind'] = foreign
-        ? 'possibile_fattura_estera'
-        : hasInvoiceSubject
-          ? 'da_classificare'
-          : 'possibile_fattura_passiva'
-
+      const summary = summarizeTransactions(rows)
+      const transactions = rows
+        .map((row) => transactionLite(row, invoicesByTransaction, matchesByInvoice))
+        .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')))
+      const descriptions = Array.from(new Set(rows.map((row) => cleanDescription(row.descrizione)).filter((value): value is string => Boolean(value)))).slice(0, 8)
+      const accounts = Array.from(new Set(rows.map((row) => row.conto || 'n/d'))).sort()
       return {
-        subject,
-        kind,
-        amount: amountTotal,
-        count: rows.length,
-        first_date: minDate(rows, 'data'),
-        last_date: maxDate(rows, 'data'),
-        accounts: Array.from(new Set(rows.map((row) => row.conto || 'n/d'))).sort(),
-        reason: foreign
-          ? 'Fornitore estero/digitale con movimenti in uscita non riconciliati: verificare fattura estera.'
-          : hasInvoiceSubject
-            ? 'Soggetto presente anche in fatture, ma movimenti ancora aperti: verificare abbinamento o classificazione.'
-            : 'Movimenti in uscita non riconciliati senza fattura passiva evidente: verificare documento da recuperare.',
-        priority: priorityFor(amountTotal),
+        subject: subjectForTransaction(rows[0]),
+        normalized_subject: key,
+        ...summary,
+        descriptions,
+        accounts,
+        entrate: rows.filter((t) => t.tipo === 'entrata').reduce((sum, t) => sum + absAmount(t.importo), 0),
+        uscite: rows.filter((t) => t.tipo === 'uscita').reduce((sum, t) => sum + absAmount(t.importo), 0),
+        riconciliate: rows.filter((t) => isReconciled(t.stato_riconciliazione)).length,
+        aperte: rows.filter((t) => !isReconciled(t.stato_riconciliazione)).length,
+        ok_without_invoice_count: transactions.filter((t) => t.ok_without_invoice).length,
+        transactions,
+        unmatched_invoices: (invoiceGroups.get(key) || []).sort((a, b) => b.amount - a.amount),
       }
     })
-    .filter((item) => item.amount >= 50)
     .sort((a, b) => b.amount - a.amount)
-    .slice(0, 30)
+}
+
+function buildMatchMaps(fatture: FatturaRow[], riconciliazioni: RiconciliazioneRow[]) {
+  const matchesByInvoice = new Map<string, Set<string>>()
+  const invoicesByTransaction = new Map<string, FatturaRow[]>()
+  const fattureById = new Map(fatture.map((fattura) => [fattura.id, fattura]))
+
+  const addMatch = (fatturaId: string | null | undefined, transazioneId: string | null | undefined) => {
+    if (!fatturaId || !transazioneId) return
+    const fattura = fattureById.get(fatturaId)
+    if (!fattura) return
+    if (!matchesByInvoice.has(fatturaId)) matchesByInvoice.set(fatturaId, new Set())
+    matchesByInvoice.get(fatturaId)!.add(transazioneId)
+    const current = invoicesByTransaction.get(transazioneId) || []
+    if (!current.some((item) => item.id === fatturaId)) {
+      invoicesByTransaction.set(transazioneId, [...current, fattura])
+    }
+  }
+
+  for (const fattura of fatture) {
+    addMatch(fattura.id, fattura.transazione_id)
+  }
+  for (const riconciliazione of riconciliazioni) {
+    addMatch(riconciliazione.fattura_id, riconciliazione.transazione_id)
+  }
+
+  return { matchesByInvoice, invoicesByTransaction }
 }
 
 export async function GET() {
   const supabase = createServerClient()
 
-  const [{ data: fatture, error: fattureError }, { data: transazioni, error: transazioniError }] = await Promise.all([
+  const [
+    { data: fatture, error: fattureError },
+    { data: transazioni, error: transazioniError },
+    { data: riconciliazioni, error: riconciliazioniError },
+  ] = await Promise.all([
     supabase
       .from('fatture')
-      .select('id, tipo, numero, totale, imponibile, imposta, data_emissione, stato_riconciliazione, denominazione_cliente, denominazione_fornitore, fonte')
+      .select('id, tipo, numero, totale, imponibile, imposta, data_emissione, stato_riconciliazione, denominazione_cliente, denominazione_fornitore, fonte, transazione_id')
       .gte('data_emissione', START)
       .lt('data_emissione', END)
       .range(0, 99999),
@@ -304,13 +396,17 @@ export async function GET() {
       .gte('data', START)
       .lt('data', END)
       .range(0, 99999),
+    supabase
+      .from('riconciliazioni')
+      .select('fattura_id, transazione_id')
+      .range(0, 99999),
   ])
 
-  if (fattureError || transazioniError) {
+  if (fattureError || transazioniError || riconciliazioniError) {
     return NextResponse.json(
       {
         error: 'Errore nel caricamento analisi 2025',
-        details: fattureError?.message || transazioniError?.message,
+        details: fattureError?.message || transazioniError?.message || riconciliazioniError?.message,
       },
       { status: 500 },
     )
@@ -318,6 +414,8 @@ export async function GET() {
 
   const fattureRows = (fatture || []) as FatturaRow[]
   const transazioniRows = (transazioni || []) as TransazioneRow[]
+  const riconciliazioniRows = (riconciliazioni || []) as RiconciliazioneRow[]
+  const { matchesByInvoice, invoicesByTransaction } = buildMatchMaps(fattureRows, riconciliazioniRows)
 
   const fattureAttive = fattureRows.filter((f) => f.tipo === 'emessa')
   const fatturePassive = fattureRows.filter((f) => f.tipo === 'ricevuta' && f.fonte !== 'estero')
@@ -351,11 +449,16 @@ export async function GET() {
       by_account: byAccount,
       by_month: monthBuckets(transazioniRows, (row) => row.data, (row) => absAmount(row.importo)),
     },
-    fatture: {
-      attive: summarizeInvoices(fattureAttive, 'emessa'),
-      passive: summarizeInvoices(fatturePassive, 'ricevuta'),
-      estere: summarizeInvoices(fattureEstere, 'estero'),
+    transazioni: {
+      by_supplier: buildTransactionGroups(transazioniRows, fattureRows, invoicesByTransaction, matchesByInvoice),
+      ok_without_invoice: transazioniRows
+        .map((row) => transactionLite(row, invoicesByTransaction, matchesByInvoice))
+        .filter((row) => row.ok_without_invoice),
     },
-    documenti_mancanti: buildMissingCandidates(transazioniRows, fattureRows),
+    fatture: {
+      attive: buildInvoiceCoverage(fattureAttive, 'emessa', matchesByInvoice),
+      passive: buildInvoiceCoverage(fatturePassive, 'ricevuta', matchesByInvoice),
+      estere: buildInvoiceCoverage(fattureEstere, 'estero', matchesByInvoice),
+    },
   })
 }

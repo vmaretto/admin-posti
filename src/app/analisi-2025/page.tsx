@@ -1,7 +1,8 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowDownRight, Banknote, CheckCircle2, FileQuestion, Globe2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, ArrowDownRight, Banknote, CheckCircle2, Edit3, FileText, GitBranch, Globe2, RefreshCw } from 'lucide-react'
 
 type MonthBucket = { month: string; count: number; amount: number }
 type CoverageSummary = {
@@ -17,24 +18,52 @@ type BankAccountCoverage = CoverageSummary & {
   entrate: number
   uscite: number
 }
+type InvoiceLite = {
+  id: string
+  numero: string | null
+  data: string | null
+  amount: number
+  subject: string
+  stato: string | null
+  matched_transaction_ids: string[]
+}
+type TransactionLite = {
+  id: string
+  data: string | null
+  amount: number
+  tipo: string | null
+  conto: string | null
+  controparte: string
+  descrizione: string | null
+  stato: string | null
+  matched_invoice_ids: string[]
+  matched_invoices: InvoiceLite[]
+  ok_without_invoice: boolean
+}
+type SupplierInvoiceCoverage = CoverageSummary & {
+  subject: string
+  normalized_subject: string
+  invoices: InvoiceLite[]
+  unmatched: InvoiceLite[]
+}
 type InvoiceCoverage = CoverageSummary & {
   tipo: 'emessa' | 'ricevuta' | 'estero'
-  first_number: string | null
-  last_number: string | null
-  last_subject: string | null
-  gaps: string[]
   by_month: MonthBucket[]
+  by_supplier: SupplierInvoiceCoverage[]
+  unmatched: InvoiceLite[]
 }
-type MissingDocumentCandidate = {
+type TransactionSupplierGroup = CoverageSummary & {
   subject: string
-  kind: 'possibile_fattura_passiva' | 'possibile_fattura_estera' | 'da_classificare'
-  amount: number
-  count: number
-  first_date: string | null
-  last_date: string | null
+  normalized_subject: string
+  descriptions: string[]
   accounts: string[]
-  reason: string
-  priority: 'alta' | 'media' | 'bassa'
+  entrate: number
+  uscite: number
+  riconciliate: number
+  aperte: number
+  ok_without_invoice_count: number
+  transactions: TransactionLite[]
+  unmatched_invoices: InvoiceLite[]
 }
 type AnalysisData = {
   periodo: string
@@ -46,12 +75,15 @@ type AnalysisData = {
     by_account: BankAccountCoverage[]
     by_month: MonthBucket[]
   }
+  transazioni: {
+    by_supplier: TransactionSupplierGroup[]
+    ok_without_invoice: TransactionLite[]
+  }
   fatture: {
     attive: InvoiceCoverage
     passive: InvoiceCoverage
     estere: InvoiceCoverage
   }
-  documenti_mancanti: MissingDocumentCandidate[]
 }
 
 function formatCurrency(amount: number): string {
@@ -83,6 +115,14 @@ function Badge({ children, className }: { children: React.ReactNode; className: 
   return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${className}`}>{children}</span>
 }
 
+function ActionLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <Link href={href} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-700 text-xs font-bold text-gray-700 dark:text-gray-200 hover:border-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition">
+      {children}
+    </Link>
+  )
+}
+
 function SectionCard({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
   return (
     <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
@@ -112,41 +152,27 @@ function CoverageCard({ title, summary, subtitle }: { title: string; summary: Co
         <div><p className="text-gray-500 dark:text-gray-400">Importo</p><p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(summary.amount)}</p></div>
         <div><p className="text-gray-500 dark:text-gray-400">Mesi mancanti</p><p className="font-semibold text-gray-900 dark:text-white">{summary.months_missing.length || '0'}</p></div>
       </div>
-      {summary.months_missing.length > 0 && (
-        <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">Mesi senza dati: {summary.months_missing.map(shortMonth).join(', ')}</p>
-      )}
+      <MonthPills present={summary.months_present} missing={summary.months_missing} />
     </div>
   )
 }
 
-function InvoiceCard({ title, summary, icon: Icon }: { title: string; summary: InvoiceCoverage; icon: React.ComponentType<{ className?: string }> }) {
+function MonthPills({ present, missing }: { present: string[]; missing: string[] }) {
+  const presentSet = new Set(present)
+  const missingSet = new Set(missing)
+  const months = Array.from({ length: 12 }, (_, i) => `2025-${String(i + 1).padStart(2, '0')}`)
   return (
-    <SectionCard title={title} icon={Icon}>
-      <CoverageCard summary={summary} title="Copertura temporale" subtitle={`${summary.count.toLocaleString('it-IT')} documenti registrati`} />
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-        <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700">
-          <p className="text-sm text-gray-500 dark:text-gray-400">Prima fattura</p>
-          <p className="font-bold text-gray-900 dark:text-white mt-1">{summary.first_number || '—'}</p>
-        </div>
-        <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700">
-          <p className="text-sm text-gray-500 dark:text-gray-400">Ultima fattura</p>
-          <p className="font-bold text-gray-900 dark:text-white mt-1">{summary.last_number || '—'}</p>
-        </div>
-        <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700">
-          <p className="text-sm text-gray-500 dark:text-gray-400">Ultimo soggetto</p>
-          <p className="font-bold text-gray-900 dark:text-white mt-1 truncate">{summary.last_subject || '—'}</p>
-        </div>
-      </div>
-      <MonthStrip buckets={summary.by_month} />
-      {summary.gaps.length > 0 && (
-        <div className="mt-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 text-sm text-amber-800 dark:text-amber-200">
-          <p className="font-bold mb-1">Possibili buchi numerazione</p>
-          <ul className="list-disc list-inside space-y-1">
-            {summary.gaps.map((gap) => <li key={gap}>{gap}</li>)}
-          </ul>
-        </div>
-      )}
-    </SectionCard>
+    <div className="flex flex-wrap gap-1.5 mt-3">
+      {months.map((month) => {
+        const ok = presentSet.has(month)
+        const ko = missingSet.has(month)
+        return (
+          <span key={month} className={`px-2 py-1 rounded text-xs font-bold ${ok ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' : ko ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300'}`}>
+            {shortMonth(month)}
+          </span>
+        )
+      })}
+    </div>
   )
 }
 
@@ -173,46 +199,166 @@ function MonthStrip({ buckets }: { buckets: MonthBucket[] }) {
   )
 }
 
-function MissingDocuments({ items }: { items: MissingDocumentCandidate[] }) {
-  const labels = {
-    possibile_fattura_passiva: 'Possibile passiva',
-    possibile_fattura_estera: 'Possibile estera',
-    da_classificare: 'Da classificare',
+function MatchStatus({ matchedCount, stato }: { matchedCount: number; stato: string | null }) {
+  if (stato === 'riconciliata' && matchedCount > 0) {
+    return <Badge className="bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200">OK · fattura collegata</Badge>
   }
-  const priorityClass = {
-    alta: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
-    media: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
-    bassa: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200',
+  if (stato === 'riconciliata' && matchedCount === 0) {
+    return <Badge className="bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200">OK senza fattura</Badge>
   }
+  return <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">Da associare</Badge>
+}
 
+function SupplierInvoiceSection({ title, summary, icon: Icon, editHref }: { title: string; summary: InvoiceCoverage; icon: React.ComponentType<{ className?: string }>; editHref: string }) {
   return (
-    <SectionCard title="Possibili documenti da recuperare" icon={FileQuestion}>
-      <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        Movimenti in uscita 2025 non riconciliati, ordinati per importo. È una lista di lavoro: va verificata con il commercialista.
-      </p>
-      <div className="space-y-3">
-        {items.map((item, index) => (
-          <div key={`${item.subject}-${index}`} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-4">
-            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+    <SectionCard title={title} icon={Icon}>
+      <CoverageCard summary={summary} title="Copertura temporale" subtitle={`${summary.count.toLocaleString('it-IT')} documenti registrati`} />
+      <MonthStrip buckets={summary.by_month} />
+
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-white">Fornitori / soggetti e mesi coperti</h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Per ogni soggetto: mesi presenti, mesi mancanti e fatture senza movimento collegato.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <ActionLink href={editHref}><Edit3 className="h-3.5 w-3.5" /> Modifica elenco</ActionLink>
+          <ActionLink href="/riconcilia"><GitBranch className="h-3.5 w-3.5" /> Nuovo match</ActionLink>
+        </div>
+      </div>
+
+      <div className="space-y-3 mt-4">
+        {summary.by_supplier.slice(0, 30).map((supplier) => (
+          <div key={supplier.normalized_subject} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-4">
+            <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">#{index + 1}</Badge>
-                  <Badge className={priorityClass[item.priority]}>Priorità {item.priority}</Badge>
-                  <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">{labels[item.kind]}</Badge>
+                <h4 className="font-bold text-gray-900 dark:text-white break-words">{supplier.subject}</h4>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  {supplier.count} document{supplier.count === 1 ? 'o' : 'i'} · {formatCurrencyExact(supplier.amount)} · periodo {formatDate(supplier.first_date)} → {formatDate(supplier.last_date)}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                {supplier.unmatched.length > 0 ? (
+                  <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">{supplier.unmatched.length} senza movimento</Badge>
+                ) : (
+                  <Badge className="bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200">Tutto associato</Badge>
+                )}
+                <ActionLink href={editHref}><Edit3 className="h-3.5 w-3.5" /> Modifica</ActionLink>
+                <ActionLink href="/riconcilia"><GitBranch className="h-3.5 w-3.5" /> Match</ActionLink>
+              </div>
+            </div>
+            <MonthPills present={supplier.months_present} missing={supplier.months_missing} />
+            {supplier.unmatched.length > 0 && (
+              <div className="mt-3 rounded-lg bg-white dark:bg-gray-950 border border-amber-200 dark:border-amber-900 p-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2">Fatture rimaste senza movimento</p>
+                <div className="space-y-2">
+                  {supplier.unmatched.slice(0, 6).map((invoice) => (
+                    <div key={invoice.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm">
+                      <span className="text-gray-700 dark:text-gray-200">
+                        {formatDate(invoice.data)} · {invoice.numero || 'senza numero'} · {formatCurrencyExact(invoice.amount)}
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        <MatchStatus matchedCount={invoice.matched_transaction_ids.length} stato={invoice.stato} />
+                        <ActionLink href={editHref}>Modifica</ActionLink>
+                        <ActionLink href="/riconcilia">Nuovo match</ActionLink>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <h3 className="font-bold text-gray-900 dark:text-white mt-2 break-words">{item.subject}</h3>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{item.reason}</p>
               </div>
-              <div className="text-right shrink-0">
-                <p className="text-xl font-bold text-gray-900 dark:text-white">{formatCurrencyExact(item.amount)}</p>
-                <p className="text-sm text-gray-500 dark:text-gray-400">{item.count} moviment{item.count === 1 ? 'o' : 'i'}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  )
+}
+
+function TransactionsSection({ groups, anomalies }: { groups: TransactionSupplierGroup[]; anomalies: TransactionLite[] }) {
+  return (
+    <SectionCard title="Transazioni per fornitore / controparte" icon={FileText}>
+      <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3 mb-4">
+        <div>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Le transazioni sono raggruppate per fornitore/controparte. Se una transazione è in stato OK, qui deve comparire almeno una fattura collegata.
+          </p>
+          {anomalies.length > 0 && (
+            <p className="mt-2 text-sm font-semibold text-red-700 dark:text-red-300">
+              Attenzione: {anomalies.length} transazion{anomalies.length === 1 ? 'e' : 'i'} in stato OK non hanno fattura collegata.
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <ActionLink href="/transazioni"><Edit3 className="h-3.5 w-3.5" /> Modifica transazioni</ActionLink>
+          <ActionLink href="/riconcilia"><GitBranch className="h-3.5 w-3.5" /> Nuovo match</ActionLink>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {groups.slice(0, 40).map((group) => (
+          <div key={group.normalized_subject} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-4">
+            <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="font-bold text-gray-900 dark:text-white break-words">{group.subject}</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  {group.count} transazion{group.count === 1 ? 'e' : 'i'} · entrate {formatCurrencyExact(group.entrate)} · uscite {formatCurrencyExact(group.uscite)} · conti {group.accounts.join(', ')}
+                </p>
+                {group.descriptions.length > 0 && (
+                  <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">
+                    Descrizioni: {group.descriptions.join(' · ')}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <Badge className="bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200">{group.riconciliate} OK</Badge>
+                <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">{group.aperte} aperte</Badge>
+                {group.ok_without_invoice_count > 0 && <Badge className="bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200">{group.ok_without_invoice_count} OK senza fattura</Badge>}
+                {group.unmatched_invoices.length > 0 && <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">{group.unmatched_invoices.length} fatture senza movimento</Badge>}
+                <ActionLink href="/transazioni"><Edit3 className="h-3.5 w-3.5" /> Modifica</ActionLink>
+                <ActionLink href="/riconcilia"><GitBranch className="h-3.5 w-3.5" /> Match</ActionLink>
               </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3 text-sm text-gray-600 dark:text-gray-300">
-              <span>Periodo: {formatDate(item.first_date)} → {formatDate(item.last_date)}</span>
-              <span>Conti: {item.accounts.join(', ')}</span>
-              <span>Ultimo movimento: {formatDate(item.last_date)}</span>
+
+            <div className="mt-4 space-y-2">
+              {group.transactions.slice(0, 5).map((transaction) => (
+                <div key={transaction.id} className="rounded-lg bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-700 p-3 text-sm">
+                  <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-2">
+                    <div>
+                      <p className="font-semibold text-gray-900 dark:text-white">
+                        {formatDate(transaction.data)} · {transaction.conto || 'n/d'} · {formatCurrencyExact(transaction.amount)} · {transaction.tipo || 'n/d'}
+                      </p>
+                      <p className="text-gray-500 dark:text-gray-400 mt-1">{transaction.descrizione || transaction.controparte}</p>
+                      {transaction.matched_invoices.length > 0 && (
+                        <p className="text-gray-600 dark:text-gray-300 mt-1">
+                          Fatture collegate: {transaction.matched_invoices.map((invoice) => `${invoice.numero || 's/n'} ${formatCurrencyExact(invoice.amount)}`).join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 shrink-0">
+                      <MatchStatus matchedCount={transaction.matched_invoice_ids.length} stato={transaction.stato} />
+                      <ActionLink href="/transazioni">Modifica</ActionLink>
+                      <ActionLink href="/riconcilia">Nuovo match</ActionLink>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
+
+            {group.unmatched_invoices.length > 0 && (
+              <div className="mt-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900 p-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-blue-700 dark:text-blue-300 mb-2">Fatture dello stesso soggetto senza movimento collegato</p>
+                <div className="space-y-1 text-sm text-blue-900 dark:text-blue-100">
+                  {group.unmatched_invoices.slice(0, 6).map((invoice) => (
+                    <div key={invoice.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                      <span>{formatDate(invoice.data)} · {invoice.numero || 'senza numero'} · {formatCurrencyExact(invoice.amount)}</span>
+                      <div className="flex flex-wrap gap-2">
+                        <ActionLink href="/fatture">Modifica fattura</ActionLink>
+                        <ActionLink href="/riconcilia">Associa</ActionLink>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -250,9 +396,9 @@ export default function Analisi2025Page() {
       <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
         <div>
           <p className="text-sm font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">Check bilancio</p>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mt-1">Copertura documentale 2025</h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mt-1">Copertura e match documentale 2025</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-3xl">
-            Vista per capire fino a dove arrivano banca, fatture attive, passive ed estere, e quali documenti potrebbero mancare.
+            Vista operativa per controllare mesi coperti, movimenti collegati, fatture senza movimento e casi da associare/modificare.
           </p>
         </div>
         <button onClick={loadData} className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition">
@@ -270,17 +416,14 @@ export default function Analisi2025Page() {
         <MonthStrip buckets={data.banca.by_month} />
       </SectionCard>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <InvoiceCard title="Fatture attive" summary={data.fatture.attive} icon={CheckCircle2} />
-        <InvoiceCard title="Fatture passive" summary={data.fatture.passive} icon={ArrowDownRight} />
-      </div>
+      <TransactionsSection groups={data.transazioni.by_supplier} anomalies={data.transazioni.ok_without_invoice} />
 
-      <InvoiceCard title="Fatture estere" summary={data.fatture.estere} icon={Globe2} />
-
-      <MissingDocuments items={data.documenti_mancanti} />
+      <SupplierInvoiceSection title="Fatture attive italiane" summary={data.fatture.attive} icon={CheckCircle2} editHref="/fatture" />
+      <SupplierInvoiceSection title="Fatture passive italiane" summary={data.fatture.passive} icon={ArrowDownRight} editHref="/fatture" />
+      <SupplierInvoiceSection title="Fatture estere" summary={data.fatture.estere} icon={Globe2} editHref="/fatture-estere" />
 
       <div className="text-xs text-gray-400 dark:text-gray-500">
-        Aggiornato: {new Date(data.generated_at).toLocaleString('it-IT')}. I suggerimenti sono euristici: servono per orientare il controllo, non modificano dati.
+        Aggiornato: {new Date(data.generated_at).toLocaleString('it-IT')}. I pulsanti aprono le viste esistenti per modificare dati o creare un nuovo match.
       </div>
     </div>
   )

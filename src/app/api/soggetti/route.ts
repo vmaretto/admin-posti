@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
 import { distance } from 'fastest-levenshtein'
 
@@ -54,22 +54,26 @@ function isAliasName(a: string, b: string): boolean {
 // Fetch paginato — Supabase ha un limite di 1000 righe per query a livello di
 // progetto. Se il DB ha più di 1000 record, una singola select li tronca silenziosamente.
 // Questa funzione itera in batch finché non c'è più niente da leggere.
+// Supporta un filtro range opzionale su una colonna data (filtro periodo).
 async function fetchAllPaginated<T>(
   supabase: ReturnType<typeof createServerClient>,
   table: string,
   selectFields: string,
-  orderBy: string = 'created_at'
+  orderBy: string = 'created_at',
+  dateFilter?: { col: string; from: string; to: string }
 ): Promise<T[]> {
   const PAGE = 1000
   const all: T[] = []
   let from = 0
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (let safetyCounter = 0; safetyCounter < 100; safetyCounter++) {
-    const { data, error } = await supabase
+    let q = supabase
       .from(table)
       .select(selectFields)
       .order(orderBy, { ascending: true })
-      .range(from, from + PAGE - 1)
+    if (dateFilter) {
+      q = q.gte(dateFilter.col, dateFilter.from).lte(dateFilter.col, dateFilter.to)
+    }
+    const { data, error } = await q.range(from, from + PAGE - 1)
     if (error) throw new Error(`Errore fetch ${table}: ${error.message}`)
     if (!data || data.length === 0) break
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,10 +84,19 @@ async function fetchAllPaginated<T>(
   return all
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = createServerClient()
 
-  // Load TUTTE le fatture e transazioni con paginazione
+  // Periodo opzionale via query string (?from=YYYY-MM-DD&to=YYYY-MM-DD).
+  // Se assenti → niente filtro temporale (comportamento legacy "Tutto").
+  const url = new URL(request.url)
+  const from = url.searchParams.get('from') || undefined
+  const to = url.searchParams.get('to') || undefined
+  const hasPeriodo = !!(from && to)
+  const fattureFilter = hasPeriodo ? { col: 'data_emissione', from: from!, to: to! } : undefined
+  const transFilter = hasPeriodo ? { col: 'data', from: from!, to: to! } : undefined
+
+  // Load fatture e transazioni con paginazione, eventualmente filtrate per periodo.
   const fatture = await fetchAllPaginated<{
     id: string; numero: string; tipo: string; tipo_documento: string;
     totale: number; imponibile: number; imposta: number;
@@ -95,7 +108,9 @@ export async function GET() {
   }>(
     supabase,
     'fatture',
-    'id, numero, tipo, tipo_documento, totale, imponibile, imposta, data_emissione, data_ricezione, stato_riconciliazione, denominazione_fornitore, piva_fornitore, denominazione_cliente, piva_cliente, transazione_id, fonte, note'
+    'id, numero, tipo, tipo_documento, totale, imponibile, imposta, data_emissione, data_ricezione, stato_riconciliazione, denominazione_fornitore, piva_fornitore, denominazione_cliente, piva_cliente, transazione_id, fonte, note',
+    'created_at',
+    fattureFilter,
   )
 
   const transazioni = await fetchAllPaginated<{
@@ -106,16 +121,19 @@ export async function GET() {
   }>(
     supabase,
     'transazioni',
-    'id, importo, tipo, data, conto, descrizione, stato_riconciliazione, controparte, fattura_id, riferimento, note'
+    'id, importo, tipo, data, conto, descrizione, stato_riconciliazione, controparte, fattura_id, riferimento, note',
+    'created_at',
+    transFilter,
   )
 
-  // Conta reale dal DB (verifica che la paginazione non abbia perso nulla)
-  const { count: dbTransCount } = await supabase
-    .from('transazioni')
-    .select('id', { count: 'exact', head: true })
-  const { count: dbFatCount } = await supabase
-    .from('fatture')
-    .select('id', { count: 'exact', head: true })
+  // Conta reale dal DB (filtrata se c'è il periodo)
+  let qDbTrans = supabase.from('transazioni').select('id', { count: 'exact', head: true })
+  if (hasPeriodo) qDbTrans = qDbTrans.gte('data', from!).lte('data', to!)
+  const { count: dbTransCount } = await qDbTrans
+
+  let qDbFat = supabase.from('fatture').select('id', { count: 'exact', head: true })
+  if (hasPeriodo) qDbFat = qDbFat.gte('data_emissione', from!).lte('data_emissione', to!)
+  const { count: dbFatCount } = await qDbFat
 
   const { data: clusterRows } = await supabase
     .from('soggetti_cluster')
@@ -608,6 +626,7 @@ export async function GET() {
   }
 
   return NextResponse.json({
+    periodo: hasPeriodo ? { from, to } : null,
     soggetti,
     orfaneGroups,
     tralasciati: { fatture: fattureTralasciate, transazioni: transTralasciate },

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
+import PeriodoPicker from "@/components/PeriodoPicker";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -53,6 +54,7 @@ export default function RootLayout({
             </div>
           </div>
         </nav>
+        <PeriodoPicker />
         <main className="max-w-7xl mx-auto px-4 py-8">
           {children}
         </main>

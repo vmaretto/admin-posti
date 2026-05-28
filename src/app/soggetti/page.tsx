@@ -1,8 +1,10 @@
 'use client'
 
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
+import { parsePeriodo, defaultPeriodoSlug } from '@/lib/periodo'
 import {
   ChevronDown,
   ChevronRight,
@@ -276,6 +278,13 @@ function TransazioneDetail({ t }: { t: Transazione }) {
 }
 
 export default function SoggettiPage() {
+  // Periodo attivo (selezionato dal PeriodoPicker globale, vive in ?periodo=).
+  const searchParams = useSearchParams()
+  const periodo = useMemo(
+    () => parsePeriodo(searchParams.get('periodo') || defaultPeriodoSlug()),
+    [searchParams],
+  )
+
   const [soggetti, setSoggetti] = useState<Soggetto[]>([])
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
   const [tralasciati, setTralasciati] = useState<{ fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }>({ fatture: [], transazioni: [] })
@@ -411,7 +420,12 @@ export default function SoggettiPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/soggetti')
+      // Se il periodo ha un range, lo passo all'API per filtrare lato Supabase.
+      let url = '/api/soggetti'
+      if (periodo.from && periodo.to) {
+        url += `?from=${periodo.from}&to=${periodo.to}`
+      }
+      const res = await fetch(url)
       const data: SoggettiResponse = await res.json()
       setSoggetti(data.soggetti || [])
       setOrfaneGroups(data.orfaneGroups || [])
@@ -424,7 +438,7 @@ export default function SoggettiPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [periodo.from, periodo.to])
 
   function toggleSelectSoggetto(key: string) {
     setSelectedKeys(prev => {
@@ -1359,7 +1373,15 @@ export default function SoggettiPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Vista per Soggetto</h1>
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Vista per Soggetto</h1>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Periodo: <strong className="text-indigo-600 dark:text-indigo-400">{periodo.label}</strong>
+            {periodo.from && periodo.to && (
+              <span className="ml-1 text-gray-400">({periodo.from} → {periodo.to})</span>
+            )}
+          </p>
+        </div>
         <button
           onClick={handleAutoMatch}
           disabled={autoMatching || loading}

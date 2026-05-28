@@ -633,7 +633,12 @@ export default function SoggettiPage() {
       const res = await fetch('/api/soggetti/merge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from_key: renameModal.soggetto.key, to: newName }),
+        body: JSON.stringify({
+          from_key: renameModal.soggetto.key,
+          to: newName,
+          fattura_ids: renameModal.soggetto.fatture.map(f => f.id),
+          transazione_ids: renameModal.soggetto.transazioni.map(t => t.id),
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
@@ -662,7 +667,12 @@ export default function SoggettiPage() {
       const res = await fetch('/api/soggetti/merge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from_key: mergeModal.from.key, to: mergeModal.toDenom }),
+        body: JSON.stringify({
+          from_key: mergeModal.from.key,
+          to: mergeModal.toDenom,
+          fattura_ids: mergeModal.from.fatture.map(f => f.id),
+          transazione_ids: mergeModal.from.transazioni.map(t => t.id),
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')

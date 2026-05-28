@@ -14,14 +14,21 @@ function normalizeName(name: string): string {
 
 /**
  * POST /api/soggetti/merge
- * Accorpa due soggetti: tutte le fatture/transazioni del soggetto sorgente
- * vengono spostate sotto il soggetto target.
+ * Accorpa/rinomina un soggetto: tutte le fatture/transazioni indicate vengono
+ * spostate sotto il soggetto target.
  *
- * Body: { from_key: string, to: string }
- *   - from_key: chiave normalizzata del soggetto sorgente (per gestire display ambigui)
- *   - to: denominazione del soggetto target (display)
+ * Body (preferito): {
+ *   to: string,
+ *   fattura_ids?: string[],
+ *   transazione_ids?: string[]
+ * }
  *
- * Compat: accetta anche { from: string, to: string } usando from come display.
+ * Body (legacy, fallback matching per chiave normalizzata):
+ *   { to: string, from_key?: string, from?: string }
+ *
+ * Se vengono passati fattura_ids/transazione_ids, l'endpoint aggiorna SOLO quelle
+ * righe (più robusto: nessuna ambiguità con varianti di normalizzazione).
+ * Se non vengono passate, il merge ricade sul matching legacy via normalize().
  */
 export async function POST(request: NextRequest) {
   const supabase = createServerClient()
@@ -33,69 +40,113 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { from_key, from, to } = body
+  const { from_key, from, to, fattura_ids, transazione_ids } = body
   if (!to || typeof to !== 'string') {
-    return NextResponse.json({ error: 'to is required (display name del target)' }, { status: 400 })
+    return NextResponse.json({ error: 'to is required' }, { status: 400 })
   }
   const toClean = to.trim()
   const toNorm = normalizeName(toClean)
   if (!toNorm) {
-    return NextResponse.json({ error: 'to non valido' }, { status: 400 })
+    return NextResponse.json({ error: 'to non valido dopo normalizzazione' }, { status: 400 })
   }
-
-  // Determina la chiave sorgente
-  const fromKey: string = typeof from_key === 'string' && from_key.trim()
-    ? from_key.trim()
-    : typeof from === 'string'
-    ? normalizeName(from)
-    : ''
-  if (!fromKey) {
-    return NextResponse.json({ error: 'from_key (o from) è obbligatorio' }, { status: 400 })
-  }
-  if (fromKey === toNorm) {
-    return NextResponse.json({ error: 'sorgente e destinazione coincidono' }, { status: 400 })
-  }
-
-  // 1. Aggiorna denominazione su fatture (sia cliente sia fornitore) dove normalize == fromKey
-  const { data: allFatture } = await supabase
-    .from('fatture')
-    .select('id, denominazione_cliente, denominazione_fornitore')
-    .range(0, 9999)
 
   let fattureMerged = 0
-  for (const f of allFatture || []) {
-    const updates: Record<string, string> = {}
-    if (f.denominazione_cliente && normalizeName(f.denominazione_cliente) === fromKey) {
-      updates.denominazione_cliente = toClean
-    }
-    if (f.denominazione_fornitore && normalizeName(f.denominazione_fornitore) === fromKey) {
-      updates.denominazione_fornitore = toClean
-    }
-    if (Object.keys(updates).length > 0) {
-      const { error } = await supabase.from('fatture').update(updates).eq('id', f.id)
-      if (!error) fattureMerged++
-    }
-  }
-
-  // 2. Aggiorna controparte su transazioni dove normalize == fromKey
-  const { data: allTrans } = await supabase
-    .from('transazioni')
-    .select('id, controparte')
-    .range(0, 9999)
-
   let transMerged = 0
-  for (const t of allTrans || []) {
-    if (t.controparte && normalizeName(t.controparte) === fromKey) {
+
+  // -------- PATH 1: ID espliciti (preferito, robusto) --------
+  const hasExplicitFatture = Array.isArray(fattura_ids) && fattura_ids.length > 0
+  const hasExplicitTrans = Array.isArray(transazione_ids) && transazione_ids.length > 0
+
+  if (hasExplicitFatture) {
+    // Suddividi per tipo per aggiornare il campo corretto (cliente / fornitore)
+    const { data: rows } = await supabase
+      .from('fatture')
+      .select('id, tipo')
+      .in('id', fattura_ids)
+    const emesseIds = (rows || []).filter(r => r.tipo === 'emessa').map(r => r.id)
+    const ricevuteIds = (rows || []).filter(r => r.tipo === 'ricevuta').map(r => r.id)
+    if (emesseIds.length > 0) {
       const { error } = await supabase
-        .from('transazioni')
-        .update({ controparte: toClean })
-        .eq('id', t.id)
-      if (!error) transMerged++
+        .from('fatture')
+        .update({ denominazione_cliente: toClean, updated_at: new Date().toISOString() })
+        .in('id', emesseIds)
+      if (!error) fattureMerged += emesseIds.length
+    }
+    if (ricevuteIds.length > 0) {
+      const { error } = await supabase
+        .from('fatture')
+        .update({ denominazione_fornitore: toClean, updated_at: new Date().toISOString() })
+        .in('id', ricevuteIds)
+      if (!error) fattureMerged += ricevuteIds.length
     }
   }
 
-  // 3. Aggiorna soggetti_cluster: rimuovi entry "from" e assicura entry "to"
-  await supabase.from('soggetti_cluster').delete().eq('nome_normalizzato', fromKey)
+  if (hasExplicitTrans) {
+    const { error } = await supabase
+      .from('transazioni')
+      .update({ controparte: toClean, updated_at: new Date().toISOString() })
+      .in('id', transazione_ids)
+    if (!error) transMerged += transazione_ids.length
+  }
+
+  // -------- PATH 2: legacy fallback via normalize() --------
+  if (!hasExplicitFatture && !hasExplicitTrans) {
+    const fromKey: string = typeof from_key === 'string' && from_key.trim()
+      ? from_key.trim()
+      : typeof from === 'string'
+      ? normalizeName(from)
+      : ''
+    if (!fromKey) {
+      return NextResponse.json({ error: 'fornisci fattura_ids/transazione_ids oppure from_key/from' }, { status: 400 })
+    }
+
+    // Per la rinomina (from === to), il match deve poter essere "fuzzy" sul display:
+    // qui ci basiamo sul normalize che è già abbastanza permissivo.
+    const fromDisplayLower = typeof from === 'string' ? from.toLowerCase().trim() : ''
+
+    function matchesFrom(value: string | null | undefined): boolean {
+      if (!value) return false
+      if (normalizeName(value) === fromKey) return true
+      if (fromDisplayLower && value.toLowerCase().trim() === fromDisplayLower) return true
+      return false
+    }
+
+    // Aggiorna fatture
+    const { data: allFatture } = await supabase
+      .from('fatture')
+      .select('id, denominazione_cliente, denominazione_fornitore')
+      .range(0, 9999)
+    for (const f of allFatture || []) {
+      const updates: Record<string, string> = {}
+      if (matchesFrom(f.denominazione_cliente)) updates.denominazione_cliente = toClean
+      if (matchesFrom(f.denominazione_fornitore)) updates.denominazione_fornitore = toClean
+      if (Object.keys(updates).length > 0) {
+        const { error } = await supabase.from('fatture').update(updates).eq('id', f.id)
+        if (!error) fattureMerged++
+      }
+    }
+
+    // Aggiorna transazioni
+    const { data: allTrans } = await supabase
+      .from('transazioni')
+      .select('id, controparte')
+      .range(0, 9999)
+    for (const t of allTrans || []) {
+      if (matchesFrom(t.controparte)) {
+        const { error } = await supabase
+          .from('transazioni')
+          .update({ controparte: toClean })
+          .eq('id', t.id)
+        if (!error) transMerged++
+      }
+    }
+  }
+
+  // Aggiorna soggetti_cluster: assicura presenza del nuovo soggetto.
+  // Se conosciamo la chiave sorgente, rimuoviamo anche quella.
+  if (typeof from_key === 'string' && from_key.trim() && from_key.trim() !== toNorm) {
+    await supabase.from('soggetti_cluster').delete().eq('nome_normalizzato', from_key.trim())
+  }
   await supabase
     .from('soggetti_cluster')
     .upsert({ nome_normalizzato: toNorm, varianti: [toClean] }, { onConflict: 'nome_normalizzato' })

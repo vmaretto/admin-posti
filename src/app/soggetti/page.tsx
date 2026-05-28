@@ -283,6 +283,16 @@ export default function SoggettiPage() {
   const [kpi, setKpi] = useState<KpiData | null>(null)
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [tralasciatiOpen, setTralasciatiOpen] = useState(true)
+  // Quali sotto-gruppi per motivo sono espansi nella sezione tralasciati
+  const [tralasciatiMotivoOpen, setTralasciatiMotivoOpen] = useState<Set<string>>(new Set())
+  function toggleTralasciatiMotivo(motivo: string) {
+    setTralasciatiMotivoOpen(prev => {
+      const next = new Set(prev)
+      if (next.has(motivo)) next.delete(motivo)
+      else next.add(motivo)
+      return next
+    })
+  }
   // Riga espansa per dettagli inline: key = "f:{id}" o "t:{id}"
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
 
@@ -1142,12 +1152,64 @@ export default function SoggettiPage() {
   }, [tralasciati, search])
 
   // Quando l'utente cerca e i match sono nei tralasciati, apri la sezione
-  // automaticamente così non deve scrollare al buio.
+  // automaticamente così non deve scrollare al buio. Apro anche i sotto-gruppi
+  // per motivo che contengono almeno un match.
   useEffect(() => {
-    if (search && (filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length) > 0) {
+    const nMatchTral = filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length
+    if (search && nMatchTral > 0) {
       setTralasciatiOpen(true)
+      const motivi = new Set<string>()
+      for (const f of filteredTralasciati.fatture) motivi.add(f.motivo || '__SENZA_MOTIVO__')
+      for (const t of filteredTralasciati.transazioni) motivi.add(t.motivo || '__SENZA_MOTIVO__')
+      setTralasciatiMotivoOpen(prev => {
+        const next = new Set(prev)
+        motivi.forEach(m => next.add(m))
+        return next
+      })
     }
-  }, [search, filteredTralasciati.fatture.length, filteredTralasciati.transazioni.length])
+  }, [search, filteredTralasciati])
+
+  // Raggruppa i tralasciati per motivazione. Dentro ogni gruppo, le righe
+  // sono già ordinate per importo DESC dal backend. I gruppi a loro volta
+  // sono ordinati per importo aggregato DESC (il più "pesante" in cima).
+  type TralasciatiPerMotivo = {
+    motivo: string
+    label: string // "Stipendi", "Importo piccolo"... o "(Senza motivo)"
+    fatture: FatturaTralasciata[]
+    transazioni: TransTralasciata[]
+    totale: number
+    count: number
+  }
+  const tralasciatiByMotivo = useMemo<TralasciatiPerMotivo[]>(() => {
+    const map = new Map<string, TralasciatiPerMotivo>()
+    const get = (motivo: string) => {
+      const key = motivo || '__SENZA_MOTIVO__'
+      if (!map.has(key)) {
+        map.set(key, {
+          motivo: key,
+          label: motivo || '(Senza motivo)',
+          fatture: [],
+          transazioni: [],
+          totale: 0,
+          count: 0,
+        })
+      }
+      return map.get(key)!
+    }
+    for (const f of filteredTralasciati.fatture) {
+      const g = get(f.motivo || '')
+      g.fatture.push(f)
+      g.totale += Math.abs(f.totale || 0)
+      g.count++
+    }
+    for (const t of filteredTralasciati.transazioni) {
+      const g = get(t.motivo || '')
+      g.transazioni.push(t)
+      g.totale += Math.abs(t.importo || 0)
+      g.count++
+    }
+    return Array.from(map.values()).sort((a, b) => b.totale - a.totale)
+  }, [filteredTralasciati])
 
   // DEEP SEARCH: scansiona tutto l'oggetto response (soggetti, orfani, tralasciati)
   // per qualsiasi match testuale o importo. Restituisce la posizione esatta.
@@ -2131,78 +2193,103 @@ export default function SoggettiPage() {
               <Archive className="h-5 w-5 text-gray-500" />
               <div>
                 <p className="font-semibold text-gray-900 dark:text-white">
-                  Tralasciati · {filteredTralasciati.fatture.length} fatture · {filteredTralasciati.transazioni.length} transazioni
+                  Tralasciati · {tralasciatiByMotivo.length} {tralasciatiByMotivo.length === 1 ? 'motivazione' : 'motivazioni'} · {filteredTralasciati.fatture.length} fatture · {filteredTralasciati.transazioni.length} transazioni
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Voci escluse dalla riconciliazione, con motivazione registrata. Puoi ripristinarle.
+                  Voci escluse dalla riconciliazione, raggruppate per motivazione e ordinate per importo. Puoi ripristinarle.
                 </p>
               </div>
             </div>
           </button>
           {tralasciatiOpen && (
-            <div className="border-t dark:border-gray-700 px-6 py-4">
-              {filteredTralasciati.fatture.length > 0 && (
-                <div className="mb-4">
-                  <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Fatture tralasciate</h4>
-                  <div className="space-y-1 max-h-72 overflow-y-auto">
-                    {filteredTralasciati.fatture.map(f => (
-                      <div key={f.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
-                        <TipoFatturaBadge tipo={f.tipo} />
-                        <NotaCreditoBadge tipoDocumento={f.tipo_documento} />
-                        <Link href={`/fatture?id=${f.id}`} className="font-medium hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400">
-                          {f.numero}
-                        </Link>
-                        <span className="text-gray-500 dark:text-gray-400">{formatDate(f.data)}</span>
-                        <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={f.denominazione}>{f.denominazione}</span>
-                        <span className="font-medium text-gray-900 dark:text-white">{formatCurrency(f.totale)}</span>
-                        {f.motivo && (
-                          <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" title={f.motivo}>
-                            {f.motivo}
-                          </span>
+            <div className="border-t dark:border-gray-700 divide-y dark:divide-gray-700">
+              {/* Raggruppamento per motivazione: gruppi più "pesanti" (€) in cima,
+                  ogni gruppo collassabile, righe interne per importo DESC. */}
+              {tralasciatiByMotivo.map(g => {
+                const isOpen = tralasciatiMotivoOpen.has(g.motivo)
+                return (
+                  <div key={g.motivo} className="px-4 py-3">
+                    <button
+                      onClick={() => toggleTralasciatiMotivo(g.motivo)}
+                      className="w-full flex items-center gap-3 text-left hover:opacity-80"
+                    >
+                      {isOpen ? <ChevronDown className="h-4 w-4 text-gray-500" /> : <ChevronRight className="h-4 w-4 text-gray-500" />}
+                      <span className="px-2 py-0.5 text-xs font-semibold rounded bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                        {g.label}
+                      </span>
+                      <span className="text-sm text-gray-700 dark:text-gray-200">
+                        {g.fatture.length > 0 && <span>{g.fatture.length} fatture</span>}
+                        {g.fatture.length > 0 && g.transazioni.length > 0 && <span> · </span>}
+                        {g.transazioni.length > 0 && <span>{g.transazioni.length} transazioni</span>}
+                      </span>
+                      <span className="ml-auto text-sm font-bold text-gray-900 dark:text-white">
+                        {formatCurrency(g.totale)}
+                      </span>
+                    </button>
+
+                    {isOpen && (
+                      <div className="mt-3 ml-7 space-y-3">
+                        {g.fatture.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                              Fatture ({g.fatture.length})
+                            </p>
+                            <div className="space-y-1 max-h-64 overflow-y-auto">
+                              {g.fatture.map(f => (
+                                <div key={f.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
+                                  <TipoFatturaBadge tipo={f.tipo} />
+                                  <NotaCreditoBadge tipoDocumento={f.tipo_documento} />
+                                  <Link href={`/fatture?id=${f.id}`} className="font-medium hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400">
+                                    {f.numero}
+                                  </Link>
+                                  <span className="text-gray-500 dark:text-gray-400">{formatDate(f.data)}</span>
+                                  <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={f.denominazione}>{f.denominazione}</span>
+                                  <span className="ml-auto font-bold text-gray-900 dark:text-white whitespace-nowrap">{formatCurrency(f.totale)}</span>
+                                  <button
+                                    onClick={() => ripristinaFattura(f.id)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 text-xs font-medium rounded"
+                                    title="Annulla tralascio"
+                                  >
+                                    <RotateCcw className="h-3 w-3" /> Ripristina
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
                         )}
-                        <button
-                          onClick={() => ripristinaFattura(f.id)}
-                          className="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 text-xs font-medium rounded"
-                          title="Annulla tralascio"
-                        >
-                          <RotateCcw className="h-3 w-3" /> Ripristina
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {filteredTralasciati.transazioni.length > 0 && (
-                <div>
-                  <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Transazioni tralasciate</h4>
-                  <div className="space-y-1 max-h-72 overflow-y-auto">
-                    {filteredTralasciati.transazioni.map(t => (
-                      <div key={t.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
-                        <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
-                        <span className="text-gray-500 dark:text-gray-400">{formatDate(t.data)}</span>
-                        <span className={`font-medium ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
-                          {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
-                        </span>
-                        <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={cleanText(t.controparte) || cleanText(t.descrizione) || ''}>
-                          {cleanText(t.controparte) || cleanText(t.descrizione) || <em className="text-gray-400">—</em>}
-                        </span>
-                        {t.motivo && (
-                          <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" title={t.motivo}>
-                            {t.motivo}
-                          </span>
+                        {g.transazioni.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                              Transazioni ({g.transazioni.length})
+                            </p>
+                            <div className="space-y-1 max-h-64 overflow-y-auto">
+                              {g.transazioni.map(t => (
+                                <div key={t.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
+                                  <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
+                                  <span className="text-gray-500 dark:text-gray-400">{formatDate(t.data)}</span>
+                                  <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
+                                    {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
+                                  </span>
+                                  <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={cleanText(t.controparte) || cleanText(t.descrizione) || ''}>
+                                    {cleanText(t.controparte) || cleanText(t.descrizione) || <em className="text-gray-400">—</em>}
+                                  </span>
+                                  <button
+                                    onClick={() => ripristinaTransazione(t.id)}
+                                    className="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 text-xs font-medium rounded"
+                                    title="Annulla tralascio"
+                                  >
+                                    <RotateCcw className="h-3 w-3" /> Ripristina
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
                         )}
-                        <button
-                          onClick={() => ripristinaTransazione(t.id)}
-                          className="ml-auto inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 dark:bg-indigo-900 hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-200 text-xs font-medium rounded"
-                          title="Annulla tralascio"
-                        >
-                          <RotateCcw className="h-3 w-3" /> Ripristina
-                        </button>
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
-              )}
+                )
+              })}
             </div>
           )}
         </div>

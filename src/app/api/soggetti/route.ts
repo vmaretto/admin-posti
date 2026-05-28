@@ -332,7 +332,8 @@ export async function GET() {
       count,
       totale,
       suggestion,
-      transazioni: g.items.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
+      // Trans dentro un gruppo orfano: dal più grande al più piccolo
+      transazioni: g.items.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo)),
     }
   })
     .sort((a, b) => b.totale - a.totale)
@@ -423,8 +424,11 @@ export async function GET() {
       return {
         key, // chiave normalizzata, identificatore unico
         denominazione: data.originalName,
-        fatture: data.fatture.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
-        transazioni: data.transazioni.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()),
+        // Ordinamento per IMPORTO DESC (richiesto: sempre dal più grande al più piccolo).
+        // Per le fatture uso il valore assoluto del totale (la NC ha totale positivo
+        // nel DB ma viene sottratta nei conteggi; visualmente sta comunque al suo posto).
+        fatture: data.fatture.sort((a, b) => Math.abs(b.totale || 0) - Math.abs(a.totale || 0)),
+        transazioni: data.transazioni.sort((a, b) => Math.abs(b.importo || 0) - Math.abs(a.importo || 0)),
         totaleFatture,
         totaleTransazioni,
         noteCreditoCount,
@@ -471,7 +475,7 @@ export async function GET() {
         motivo: estraiMotivo((f as { note?: string | null }).note),
       }
     })
-    .sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime())
+    .sort((a, b) => Math.abs(b.totale || 0) - Math.abs(a.totale || 0))
 
   // Need to refetch notes; we didn't select 'note' above. Let's refetch only the ignored ones.
   const tralasciatIdsF = fattureTralasciate.map(f => f.id)
@@ -499,7 +503,7 @@ export async function GET() {
       controparte: t.controparte,
       motivo: '',
     }))
-    .sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime())
+    .sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
 
   const tralasciatIdsT = transTralasciate.map(t => t.id)
   if (tralasciatIdsT.length > 0) {

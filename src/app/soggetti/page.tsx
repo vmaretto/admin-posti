@@ -1182,29 +1182,46 @@ export default function SoggettiPage() {
                 </div>
                 <div className="text-right flex items-center gap-4">
                   {(() => {
-                    // Calcolo client-side, garantisce coerenza con le righe mostrate
-                    const totFatture = soggetto.fatture.reduce((s, f) => {
+                    // Calcolo client-side: 4 valori con segno + Saldo Aperto.
+                    // Le NC riducono il loro tipo (attive emessa NC -> riduce attive).
+                    let attive = 0, passive = 0
+                    for (const f of soggetto.fatture) {
                       const sign = f.tipo_documento === 'nota_credito' ? -1 : 1
-                      return s + sign * (f.totale || 0)
-                    }, 0)
-                    const totTransazioni = soggetto.transazioni.reduce((s, t) => s + (t.importo || 0), 0)
-                    const saldo = totFatture - totTransazioni
+                      const val = sign * (f.totale || 0)
+                      if (f.tipo === 'emessa') attive += val
+                      else if (f.tipo === 'ricevuta') passive += val
+                    }
+                    let entrate = 0, uscite = 0
+                    for (const t of soggetto.transazioni) {
+                      const v = Math.abs(t.importo || 0)
+                      if (t.tipo === 'entrata') entrate += v
+                      else if (t.tipo === 'uscita') uscite += v
+                    }
+                    // Saldo aperto: (cose che loro ci devono ancora) + (cose che abbiamo
+                    // pagato in eccesso rispetto al fatturato passivo).
+                    //   = (attive − entrate) + (uscite − passive)
+                    //   = (attive + uscite) − (passive + entrate)
+                    // Positivo → loro netto ci devono. Negativo → noi netto dobbiamo a loro.
+                    const saldoAperto = (attive + uscite) - (passive + entrate)
                     return (
-                      <div className="flex gap-6">
-                        <div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">
-                            Fatture {soggetto.noteCreditoCount && soggetto.noteCreditoCount > 0 ? '(netto NC)' : ''}
+                      <div className="flex gap-5 items-start">
+                        <div className="text-right min-w-[110px]">
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">Fatture</p>
+                          <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium whitespace-nowrap">↘ Att. +{formatCurrency(attive).replace('€','').trim()} €</p>
+                          <p className="text-xs text-orange-600 dark:text-orange-400 font-medium whitespace-nowrap">↗ Pas. −{formatCurrency(passive).replace('€','').trim()} €</p>
+                        </div>
+                        <div className="text-right min-w-[110px]">
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">Transazioni</p>
+                          <p className="text-xs text-green-600 font-medium whitespace-nowrap">↗ Entr. +{formatCurrency(entrate).replace('€','').trim()} €</p>
+                          <p className="text-xs text-red-600 font-medium whitespace-nowrap">↘ Usc. −{formatCurrency(uscite).replace('€','').trim()} €</p>
+                        </div>
+                        <div className="text-right min-w-[110px]">
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">Saldo Aperto</p>
+                          <p className={`font-bold whitespace-nowrap ${saldoAperto >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {saldoAperto >= 0 ? '+' : ''}{formatCurrency(saldoAperto)}
                           </p>
-                          <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(totFatture)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Transazioni</p>
-                          <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(totTransazioni)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Saldo</p>
-                          <p className={`font-bold ${saldo >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {formatCurrency(saldo)}
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                            {saldoAperto > 0 ? 'a credito' : saldoAperto < 0 ? 'a debito' : 'in pari'}
                           </p>
                         </div>
                       </div>

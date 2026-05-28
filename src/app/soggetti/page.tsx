@@ -23,6 +23,7 @@ import {
   Receipt,
   RotateCcw,
   Archive,
+  Pencil,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -134,6 +135,17 @@ function formatDate(date: string): string {
   return format(new Date(date), 'dd MMM yyyy', { locale: it })
 }
 
+// Pulisce descrizioni/testi che a volte arrivano come stringa "false" o "null"
+// (probabilmente import buggato dai CSV bancari). Se è uno di questi, ritorna ''.
+function cleanText(s: string | null | undefined): string {
+  if (!s) return ''
+  const t = String(s).trim()
+  if (!t) return ''
+  const low = t.toLowerCase()
+  if (low === 'false' || low === 'null' || low === 'undefined' || low === 'n/a') return ''
+  return t
+}
+
 function TipoFatturaBadge({ tipo }: { tipo: string }) {
   if (tipo === 'emessa') {
     return (
@@ -217,12 +229,12 @@ function TransazioneDetail({ t }: { t: Transazione }) {
       <DetailField label="Tipo" value={t.tipo === 'entrata' ? 'Entrata' : 'Uscita'} />
       <DetailField label="Stato" value={t.stato.replace('_', ' ')} />
       <DetailField label="Importo" value={formatCurrency(importoSigned)} />
-      <DetailField label="Controparte" value={t.controparte} />
-      {t.riferimento && <DetailField label="Riferimento" value={t.riferimento} />}
-      {t.descrizione && (
+      <DetailField label="Controparte" value={cleanText(t.controparte)} />
+      <DetailField label="Riferimento" value={cleanText(t.riferimento)} />
+      {cleanText(t.descrizione) && (
         <div className="col-span-2 text-xs">
           <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wide">Descrizione: </span>
-          <span className="text-gray-900 dark:text-gray-100 break-words">{t.descrizione}</span>
+          <span className="text-gray-900 dark:text-gray-100 break-words">{cleanText(t.descrizione)}</span>
         </div>
       )}
       {t.note && (
@@ -285,10 +297,39 @@ export default function SoggettiPage() {
     | { kind: 'fattura'; id: string; label: string; importo: number; data: string }
     | { kind: 'soggetto'; soggetto: Soggetto }
     | { kind: 'multi-soggetto'; soggetti: Soggetto[] }
+    | { kind: 'multi-righe'; fattureIds: string[]; transIds: string[] }
   const [ignoraModal, setIgnoraModal] = useState<{ target: IgnoraTarget; motivo: string; custom: string } | null>(null)
 
   // Modal "Accorpa soggetti"
   const [mergeModal, setMergeModal] = useState<{ from: Soggetto; toDenom: string } | null>(null)
+
+  // Modal "Rinomina soggetto"
+  const [renameModal, setRenameModal] = useState<{ soggetto: Soggetto; newName: string } | null>(null)
+
+  // Selezione multipla di singole righe (fatture + transazioni) per bulk tralascia
+  const [selectedFatture, setSelectedFatture] = useState<Set<string>>(new Set())
+  const [selectedTrans, setSelectedTrans] = useState<Set<string>>(new Set())
+
+  function toggleSelectFattura(id: string) {
+    setSelectedFatture(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  function toggleSelectTrans(id: string) {
+    setSelectedTrans(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  function deselezionaTutteRighe() {
+    setSelectedFatture(new Set())
+    setSelectedTrans(new Set())
+  }
 
   const MOTIVI_PREDEFINITI = [
     'Importo piccolo',
@@ -576,6 +617,45 @@ export default function SoggettiPage() {
     setMergeModal({ from: s, toDenom: '' })
   }
 
+  function openRenameModal(s: Soggetto) {
+    setRenameModal({ soggetto: s, newName: s.denominazione })
+  }
+
+  async function submitRename() {
+    if (!renameModal) return
+    const newName = renameModal.newName.trim()
+    if (!newName || newName === renameModal.soggetto.denominazione) {
+      setRenameModal(null)
+      return
+    }
+    try {
+      // Riusa /api/soggetti/merge: sposta tutte le righe del soggetto verso il nuovo nome
+      const res = await fetch('/api/soggetti/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_key: renameModal.soggetto.key, to: newName }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `Soggetto rinominato in "${newName}" (${data.fatture_aggiornate} fatture, ${data.transazioni_aggiornate} transazioni)`)
+      setRenameModal(null)
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
+
+  function openIgnoraRigheSelezionate() {
+    const fattureIds = Array.from(selectedFatture)
+    const transIds = Array.from(selectedTrans)
+    if (fattureIds.length === 0 && transIds.length === 0) return
+    setIgnoraModal({
+      target: { kind: 'multi-righe', fattureIds, transIds },
+      motivo: '',
+      custom: '',
+    })
+  }
+
   async function submitMerge() {
     if (!mergeModal || !mergeModal.toDenom) return
     try {
@@ -602,6 +682,36 @@ export default function SoggettiPage() {
       return
     }
     try {
+      if (ignoraModal.target.kind === 'multi-righe') {
+        const fattureIds = ignoraModal.target.fattureIds
+        const transIds = ignoraModal.target.transIds
+        const calls: Promise<Response>[] = []
+        if (fattureIds.length > 0) {
+          calls.push(fetch('/api/fatture/ignora', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fattura_ids: fattureIds, motivo: motivoFinal }),
+          }))
+        }
+        if (transIds.length > 0) {
+          calls.push(fetch('/api/transazioni/ignora', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transazione_ids: transIds, motivo: motivoFinal }),
+          }))
+        }
+        const results = await Promise.all(calls)
+        for (const r of results) {
+          if (!r.ok) {
+            const d = await r.json().catch(() => ({}))
+            throw new Error(d.error || `Errore ${r.status}`)
+          }
+        }
+        showFeedback('ok', `Tralasciate ${fattureIds.length} fatture e ${transIds.length} transazioni (${motivoFinal})`)
+        setIgnoraModal(null)
+        deselezionaTutteRighe()
+        await load()
+        return
+      }
+
       if (ignoraModal.target.kind === 'multi-soggetto') {
         // Tralascia molti soggetti in batch
         const fattureIds = ignoraModal.target.soggetti.flatMap(s => s.fatture.map(f => f.id))
@@ -785,7 +895,7 @@ export default function SoggettiPage() {
         </div>
       )}
 
-      {/* Selection toolbar */}
+      {/* Selection toolbar — soggetti */}
       {selectedKeys.size > 0 && (
         <div className="sticky top-2 z-40 mb-4 bg-indigo-600 text-white rounded-md shadow-lg px-4 py-2 flex items-center justify-between gap-4 flex-wrap">
           <span className="font-medium text-sm">
@@ -809,6 +919,29 @@ export default function SoggettiPage() {
               className="inline-flex items-center gap-1 px-3 py-1 bg-amber-500 hover:bg-amber-400 text-white rounded text-xs font-medium"
             >
               <Trash2 className="h-3 w-3" /> Tralascia selezionati…
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Selection toolbar — righe individuali */}
+      {(selectedFatture.size > 0 || selectedTrans.size > 0) && (
+        <div className="sticky top-2 z-40 mb-4 bg-purple-600 text-white rounded-md shadow-lg px-4 py-2 flex items-center justify-between gap-4 flex-wrap">
+          <span className="font-medium text-sm">
+            {selectedFatture.size} fatture · {selectedTrans.size} transazioni selezionate
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={deselezionaTutteRighe}
+              className="px-3 py-1 bg-purple-500 hover:bg-purple-400 rounded text-xs font-medium"
+            >
+              Deseleziona
+            </button>
+            <button
+              onClick={openIgnoraRigheSelezionate}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-amber-500 hover:bg-amber-400 text-white rounded text-xs font-medium"
+            >
+              <Trash2 className="h-3 w-3" /> Tralascia righe…
             </button>
           </div>
         </div>
@@ -976,8 +1109,8 @@ export default function SoggettiPage() {
                             <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
                               {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
                             </span>
-                            <span className="text-gray-600 dark:text-gray-300 truncate flex-1" title={t.controparte || t.descrizione || ''}>
-                              {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
+                            <span className="text-gray-600 dark:text-gray-300 truncate flex-1" title={cleanText(t.controparte) || cleanText(t.descrizione) || ''}>
+                              {cleanText(t.controparte) || cleanText(t.descrizione) || <em className="text-gray-400">—</em>}
                             </span>
                             <button
                               onClick={() => openIgnoraTrans(t)}
@@ -1056,6 +1189,13 @@ export default function SoggettiPage() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <button
+                      onClick={(e) => { e.stopPropagation(); openRenameModal(soggetto) }}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-indigo-100 dark:hover:bg-indigo-900 text-gray-700 dark:text-gray-200 text-xs font-medium rounded whitespace-nowrap"
+                      title="Rinomina soggetto"
+                    >
+                      <Pencil className="h-3 w-3" /> Rinomina…
+                    </button>
+                    <button
                       onClick={(e) => { e.stopPropagation(); openMergeModal(soggetto) }}
                       className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-indigo-100 dark:hover:bg-indigo-900 text-gray-700 dark:text-gray-200 text-xs font-medium rounded whitespace-nowrap"
                       title="Accorpa con un altro soggetto"
@@ -1109,6 +1249,14 @@ export default function SoggettiPage() {
                                 } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
                               >
                                 <div className="flex items-center gap-2 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedFatture.has(f.id)}
+                                    onChange={(e) => { e.stopPropagation(); toggleSelectFattura(f.id) }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-3.5 w-3.5 rounded border-gray-300 text-purple-600 flex-shrink-0"
+                                    title="Seleziona riga"
+                                  />
                                   {draggable && <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />}
                                   {isLinked && (
                                     <button
@@ -1191,6 +1339,14 @@ export default function SoggettiPage() {
                                 } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
                               >
                                 <div className="flex items-center gap-2 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedTrans.has(t.id)}
+                                    onChange={(e) => { e.stopPropagation(); toggleSelectTrans(t.id) }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-3.5 w-3.5 rounded border-gray-300 text-purple-600 flex-shrink-0"
+                                    title="Seleziona riga"
+                                  />
                                   {draggable && <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />}
                                   {isLinked && (
                                     <button
@@ -1203,6 +1359,11 @@ export default function SoggettiPage() {
                                   )}
                                   <span className="font-medium capitalize dark:text-white whitespace-nowrap">{t.conto}</span>
                                   <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatDate(t.data)}</span>
+                                  {cleanText(t.descrizione) && (
+                                    <span className="text-gray-500 dark:text-gray-400 truncate" title={cleanText(t.descrizione)}>
+                                      · {cleanText(t.descrizione)}
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-2 flex-shrink-0">
                                   <span className={`px-1.5 py-0.5 text-xs rounded ${
@@ -1317,8 +1478,8 @@ export default function SoggettiPage() {
                         <span className={`font-medium ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
                           {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
                         </span>
-                        <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={t.controparte || t.descrizione || ''}>
-                          {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
+                        <span className="text-gray-600 dark:text-gray-300 truncate max-w-xs" title={cleanText(t.controparte) || cleanText(t.descrizione) || ''}>
+                          {cleanText(t.controparte) || cleanText(t.descrizione) || <em className="text-gray-400">—</em>}
                         </span>
                         {t.motivo && (
                           <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" title={t.motivo}>
@@ -1339,6 +1500,53 @@ export default function SoggettiPage() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal: Rinomina soggetto */}
+      {renameModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setRenameModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+              Rinomina soggetto
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Il nuovo nome verrà applicato a tutte le {renameModal.soggetto.fatture.length} fatture e{' '}
+              {renameModal.soggetto.transazioni.length} transazioni di <strong>{renameModal.soggetto.denominazione}</strong>.
+            </p>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+              Nuovo nome <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              autoFocus
+              value={renameModal.newName}
+              onChange={(e) => setRenameModal(prev => prev ? { ...prev, newName: e.target.value } : null)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitRename() }}
+              className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setRenameModal(null)}
+                className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={submitRename}
+                disabled={!renameModal.newName.trim() || renameModal.newName.trim() === renameModal.soggetto.denominazione}
+                className="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium"
+              >
+                Rinomina
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1466,6 +1674,7 @@ export default function SoggettiPage() {
               {ignoraModal.target.kind === 'fattura' && 'Tralascia fattura'}
               {ignoraModal.target.kind === 'soggetto' && 'Tralascia intero soggetto'}
               {ignoraModal.target.kind === 'multi-soggetto' && `Tralascia ${ignoraModal.target.soggetti.length} soggetti`}
+              {ignoraModal.target.kind === 'multi-righe' && `Tralascia ${ignoraModal.target.fattureIds.length + ignoraModal.target.transIds.length} righe selezionate`}
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
               {ignoraModal.target.kind === 'group' && (
@@ -1487,6 +1696,12 @@ export default function SoggettiPage() {
                 <>
                   Stai per tralasciare <strong>{ignoraModal.target.soggetti.length}</strong> soggetti.
                   Tutte le loro fatture e transazioni verranno marcate come tralasciate con la stessa motivazione.
+                </>
+              )}
+              {ignoraModal.target.kind === 'multi-righe' && (
+                <>
+                  Stai per tralasciare <strong>{ignoraModal.target.fattureIds.length}</strong> fatture e{' '}
+                  <strong>{ignoraModal.target.transIds.length}</strong> transazioni con la stessa motivazione.
                 </>
               )}
               {(ignoraModal.target.kind === 'trans' || ignoraModal.target.kind === 'fattura') && (

@@ -35,12 +35,12 @@ export async function GET() {
   // Load fatture, transazioni, soggetti_cluster
   const { data: fatture } = await supabase
     .from('fatture')
-    .select('id, numero, tipo, tipo_documento, totale, data_emissione, stato_riconciliazione, denominazione_fornitore, denominazione_cliente, transazione_id')
+    .select('id, numero, tipo, tipo_documento, totale, imponibile, imposta, data_emissione, data_ricezione, stato_riconciliazione, denominazione_fornitore, piva_fornitore, denominazione_cliente, piva_cliente, transazione_id, fonte, note')
     .range(0, 9999)
 
   const { data: transazioni } = await supabase
     .from('transazioni')
-    .select('id, importo, tipo, data, conto, descrizione, stato_riconciliazione, controparte, fattura_id')
+    .select('id, importo, tipo, data, conto, descrizione, stato_riconciliazione, controparte, fattura_id, riferimento, note')
     .range(0, 9999)
 
   const { data: clusterRows } = await supabase
@@ -74,8 +74,17 @@ export async function GET() {
       tipo: f.tipo,
       tipo_documento: f.tipo_documento || 'fattura',
       totale: f.totale,
+      imponibile: f.imponibile,
+      imposta: f.imposta,
       data: f.data_emissione,
+      data_ricezione: f.data_ricezione,
       stato: f.stato_riconciliazione,
+      denominazione_cliente: f.denominazione_cliente,
+      denominazione_fornitore: f.denominazione_fornitore,
+      piva_cliente: f.piva_cliente,
+      piva_fornitore: f.piva_fornitore,
+      fonte: f.fonte,
+      note: f.note,
     })
   }
 
@@ -141,11 +150,14 @@ export async function GET() {
       soggettiMap.get(key)!.transazioni.push({
         id: t.id,
         importo: Math.abs(t.importo),
+        importo_signed: t.importo,
         tipo: t.tipo,
         data: t.data,
         conto: t.conto,
         descrizione: t.descrizione,
         controparte: t.controparte,
+        riferimento: t.riferimento,
+        note: t.note,
         stato: t.stato_riconciliazione,
         fatture_ids: linkedFatture.map(f => f.id),
       })
@@ -162,6 +174,8 @@ export async function GET() {
     conto: string
     descrizione: string | null
     controparte: string | null
+    riferimento?: string | null
+    note?: string | null
     stato: string
   }
 
@@ -176,6 +190,8 @@ export async function GET() {
       conto: t.conto,
       descrizione: t.descrizione,
       controparte: t.controparte,
+      riferimento: t.riferimento,
+      note: t.note,
       stato: t.stato_riconciliazione,
     }))
 

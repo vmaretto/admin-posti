@@ -32,19 +32,31 @@ interface Fattura {
   tipo: 'emessa' | 'ricevuta' | string
   tipo_documento?: 'fattura' | 'nota_credito' | string
   totale: number
+  imponibile?: number
+  imposta?: number
   data: string
+  data_ricezione?: string | null
   stato: string
+  denominazione_cliente?: string | null
+  denominazione_fornitore?: string | null
+  piva_cliente?: string | null
+  piva_fornitore?: string | null
+  fonte?: string | null
+  note?: string | null
   transazione_id?: string
 }
 
 interface Transazione {
   id: string
   importo: number
+  importo_signed?: number
   tipo: 'entrata' | 'uscita' | string
   data: string
   conto: string
   descrizione?: string
   controparte?: string
+  riferimento?: string | null
+  note?: string | null
   stato: string
   fatture_ids?: string[]
 }
@@ -152,12 +164,94 @@ function NotaCreditoBadge({ tipoDocumento }: { tipoDocumento?: string }) {
   )
 }
 
+function DetailField({ label, value }: { label: string; value: React.ReactNode }) {
+  if (value === null || value === undefined || value === '') return null
+  return (
+    <div className="text-xs">
+      <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wide">{label}: </span>
+      <span className="text-gray-900 dark:text-gray-100 font-medium">{value}</span>
+    </div>
+  )
+}
+
+function FatturaDetail({ f }: { f: Fattura }) {
+  return (
+    <div className="bg-gray-100 dark:bg-gray-900 rounded p-3 mt-1 grid grid-cols-2 gap-x-4 gap-y-1 border border-gray-200 dark:border-gray-700">
+      <DetailField label="Numero" value={f.numero} />
+      <DetailField label="Tipo" value={f.tipo === 'emessa' ? 'Attiva (emessa)' : 'Passiva (ricevuta)'} />
+      <DetailField label="Documento" value={f.tipo_documento === 'nota_credito' ? 'Nota di credito' : 'Fattura'} />
+      <DetailField label="Stato" value={f.stato.replace('_', ' ')} />
+      <DetailField label="Data emissione" value={formatDate(f.data)} />
+      {f.data_ricezione && <DetailField label="Data ricezione" value={formatDate(f.data_ricezione)} />}
+      {f.tipo === 'emessa' ? (
+        <>
+          <DetailField label="Cliente" value={f.denominazione_cliente} />
+          <DetailField label="P.IVA cliente" value={f.piva_cliente} />
+        </>
+      ) : (
+        <>
+          <DetailField label="Fornitore" value={f.denominazione_fornitore} />
+          <DetailField label="P.IVA fornitore" value={f.piva_fornitore} />
+        </>
+      )}
+      <DetailField label="Imponibile" value={typeof f.imponibile === 'number' ? formatCurrency(f.imponibile) : null} />
+      <DetailField label="IVA" value={typeof f.imposta === 'number' ? formatCurrency(f.imposta) : null} />
+      <DetailField label="Totale" value={formatCurrency(f.totale)} />
+      <DetailField label="Fonte" value={f.fonte} />
+      {f.note && (
+        <div className="col-span-2 text-xs whitespace-pre-wrap break-words border-t pt-2 mt-1 dark:border-gray-700">
+          <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wide">Note: </span>
+          <span className="text-gray-900 dark:text-gray-100">{f.note}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TransazioneDetail({ t }: { t: Transazione }) {
+  const importoSigned = typeof t.importo_signed === 'number' ? t.importo_signed : (t.tipo === 'entrata' ? t.importo : -t.importo)
+  return (
+    <div className="bg-gray-100 dark:bg-gray-900 rounded p-3 mt-1 grid grid-cols-2 gap-x-4 gap-y-1 border border-gray-200 dark:border-gray-700">
+      <DetailField label="Conto" value={t.conto} />
+      <DetailField label="Data" value={formatDate(t.data)} />
+      <DetailField label="Tipo" value={t.tipo === 'entrata' ? 'Entrata' : 'Uscita'} />
+      <DetailField label="Stato" value={t.stato.replace('_', ' ')} />
+      <DetailField label="Importo" value={formatCurrency(importoSigned)} />
+      <DetailField label="Controparte" value={t.controparte} />
+      {t.riferimento && <DetailField label="Riferimento" value={t.riferimento} />}
+      {t.descrizione && (
+        <div className="col-span-2 text-xs">
+          <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wide">Descrizione: </span>
+          <span className="text-gray-900 dark:text-gray-100 break-words">{t.descrizione}</span>
+        </div>
+      )}
+      {t.note && (
+        <div className="col-span-2 text-xs whitespace-pre-wrap break-words border-t pt-2 mt-1 dark:border-gray-700">
+          <span className="text-gray-500 dark:text-gray-400 uppercase tracking-wide">Note: </span>
+          <span className="text-gray-900 dark:text-gray-100">{t.note}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function SoggettiPage() {
   const [soggetti, setSoggetti] = useState<Soggetto[]>([])
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
   const [tralasciati, setTralasciati] = useState<{ fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }>({ fatture: [], transazioni: [] })
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [tralasciatiOpen, setTralasciatiOpen] = useState(false)
+  // Riga espansa per dettagli inline: key = "f:{id}" o "t:{id}"
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+
+  function toggleRowExpand(rowKey: string) {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      if (next.has(rowKey)) next.delete(rowKey)
+      else next.add(rowKey)
+      return next
+    })
+  }
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
@@ -626,13 +720,45 @@ export default function SoggettiPage() {
     [soggetti]
   )
 
+  // Filtro globale: la search box filtra anche orfani e tralasciati (per ritrovare
+  // facilmente transazioni 'fantasma' come 'olio' che non appaiono nei soggetti).
+  const filteredOrfaneGroups = useMemo(() => {
+    if (!search) return orfaneGroups
+    const q = search.toLowerCase()
+    return orfaneGroups.filter(g =>
+      g.label.toLowerCase().includes(q) ||
+      g.varianti.some(v => v.toLowerCase().includes(q)) ||
+      g.transazioni.some(t =>
+        (t.descrizione || '').toLowerCase().includes(q) ||
+        (t.controparte || '').toLowerCase().includes(q)
+      )
+    )
+  }, [orfaneGroups, search])
+
+  const filteredTralasciati = useMemo(() => {
+    if (!search) return tralasciati
+    const q = search.toLowerCase()
+    return {
+      fatture: tralasciati.fatture.filter(f =>
+        f.numero.toLowerCase().includes(q) ||
+        (f.denominazione || '').toLowerCase().includes(q) ||
+        (f.motivo || '').toLowerCase().includes(q)
+      ),
+      transazioni: tralasciati.transazioni.filter(t =>
+        (t.controparte || '').toLowerCase().includes(q) ||
+        (t.descrizione || '').toLowerCase().includes(q) ||
+        (t.motivo || '').toLowerCase().includes(q)
+      ),
+    }
+  }, [tralasciati, search])
+
   const orfaneTotal = useMemo(
-    () => orfaneGroups.reduce((s, g) => s + g.totale, 0),
-    [orfaneGroups]
+    () => filteredOrfaneGroups.reduce((s, g) => s + g.totale, 0),
+    [filteredOrfaneGroups]
   )
   const orfaneCount = useMemo(
-    () => orfaneGroups.reduce((s, g) => s + g.count, 0),
-    [orfaneGroups]
+    () => filteredOrfaneGroups.reduce((s, g) => s + g.count, 0),
+    [filteredOrfaneGroups]
   )
 
   return (
@@ -712,7 +838,7 @@ export default function SoggettiPage() {
       </div>
 
       {/* Orphan groups */}
-      {orfaneGroups.length > 0 && (
+      {filteredOrfaneGroups.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow mb-6 border-l-4 border-amber-500">
           <button
             onClick={() => setOrfaneOpen(o => !o)}
@@ -723,7 +849,7 @@ export default function SoggettiPage() {
               <AlertTriangle className="h-5 w-5 text-amber-500" />
               <div>
                 <p className="font-semibold text-gray-900 dark:text-white">
-                  Transazioni senza soggetto · {orfaneGroups.length} gruppi · {orfaneCount} transazioni
+                  Transazioni senza soggetto · {filteredOrfaneGroups.length} gruppi · {orfaneCount} transazioni
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Totale aggregato {formatCurrency(orfaneTotal)} · ordinati per importo decrescente
@@ -733,7 +859,7 @@ export default function SoggettiPage() {
           </button>
           {orfaneOpen && (
             <div className="border-t dark:border-gray-700 divide-y dark:divide-gray-700">
-              {orfaneGroups.map(group => {
+              {filteredOrfaneGroups.map(group => {
                 const isOpen = expandedGroups.has(group.key)
                 const newInput = newSoggettoInput[group.key] || ''
                 return (
@@ -962,16 +1088,19 @@ export default function SoggettiPage() {
                             const isHighlighted = highlightFattura === f.id
                             const isDropTarget = dropTargetId === f.id
                             const draggable = !isLinked
+                            const rowKey = `f:${f.id}`
+                            const isExpanded = expandedRows.has(rowKey)
                             return (
+                              <div key={f.id}>
                               <div
-                                key={f.id}
+                                onClick={() => toggleRowExpand(rowKey)}
                                 draggable={draggable}
                                 onDragStart={(e) => draggable && onDragStart({ kind: 'fattura', id: f.id, soggetto: soggetto.denominazione }, e)}
                                 onDragEnd={onDragEnd}
                                 onDragOver={(e) => onDragOver({ kind: 'fattura', id: f.id, soggetto: soggetto.denominazione }, e)}
                                 onDragLeave={() => onDragLeave({ kind: 'fattura', id: f.id, soggetto: soggetto.denominazione })}
                                 onDrop={(e) => onDrop({ kind: 'fattura', id: f.id, soggetto: soggetto.denominazione }, e)}
-                                className={`flex justify-between items-center text-sm rounded px-3 py-2 transition group ${
+                                className={`flex justify-between items-center text-sm rounded px-3 py-2 transition group cursor-pointer ${
                                   isDropTarget
                                     ? 'bg-indigo-100 dark:bg-indigo-900 ring-2 ring-indigo-500'
                                     : isHighlighted
@@ -992,12 +1121,7 @@ export default function SoggettiPage() {
                                   )}
                                   <TipoFatturaBadge tipo={f.tipo} />
                                   <NotaCreditoBadge tipoDocumento={f.tipo_documento} />
-                                  <Link
-                                    href={`/fatture?id=${f.id}`}
-                                    className="font-medium hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400 truncate"
-                                  >
-                                    {f.numero}
-                                  </Link>
+                                  <span className="font-medium dark:text-white truncate">{f.numero}</span>
                                   <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatDate(f.data)}</span>
                                 </div>
                                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -1026,6 +1150,8 @@ export default function SoggettiPage() {
                                   )}
                                 </div>
                               </div>
+                              {isExpanded && <FatturaDetail f={f} />}
+                              </div>
                             )
                           })
                         )}
@@ -1044,16 +1170,19 @@ export default function SoggettiPage() {
                             const isHighlighted = highlightTransazione === t.id
                             const isDropTarget = dropTargetId === t.id
                             const draggable = !isLinked
+                            const rowKey = `t:${t.id}`
+                            const isExpanded = expandedRows.has(rowKey)
                             return (
+                              <div key={t.id}>
                               <div
-                                key={t.id}
+                                onClick={() => toggleRowExpand(rowKey)}
                                 draggable={draggable}
                                 onDragStart={(e) => draggable && onDragStart({ kind: 'transazione', id: t.id, soggetto: soggetto.denominazione }, e)}
                                 onDragEnd={onDragEnd}
                                 onDragOver={(e) => onDragOver({ kind: 'transazione', id: t.id, soggetto: soggetto.denominazione }, e)}
                                 onDragLeave={() => onDragLeave({ kind: 'transazione', id: t.id, soggetto: soggetto.denominazione })}
                                 onDrop={(e) => onDrop({ kind: 'transazione', id: t.id, soggetto: soggetto.denominazione }, e)}
-                                className={`flex justify-between items-center text-sm rounded px-3 py-2 transition group ${
+                                className={`flex justify-between items-center text-sm rounded px-3 py-2 transition group cursor-pointer ${
                                   isDropTarget
                                     ? 'bg-indigo-100 dark:bg-indigo-900 ring-2 ring-indigo-500'
                                     : isHighlighted
@@ -1072,12 +1201,7 @@ export default function SoggettiPage() {
                                       <Link2 className="h-4 w-4" />
                                     </button>
                                   )}
-                                  <Link
-                                    href={`/transazioni?id=${t.id}`}
-                                    className="font-medium capitalize hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400 whitespace-nowrap"
-                                  >
-                                    {t.conto}
-                                  </Link>
+                                  <span className="font-medium capitalize dark:text-white whitespace-nowrap">{t.conto}</span>
                                   <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatDate(t.data)}</span>
                                 </div>
                                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -1108,6 +1232,8 @@ export default function SoggettiPage() {
                                   )}
                                 </div>
                               </div>
+                              {isExpanded && <TransazioneDetail t={t} />}
+                              </div>
                             )
                           })
                         )}
@@ -1128,7 +1254,7 @@ export default function SoggettiPage() {
       )}
 
       {/* Sezione Tralasciati */}
-      {(tralasciati.fatture.length > 0 || tralasciati.transazioni.length > 0) && (
+      {(filteredTralasciati.fatture.length > 0 || filteredTralasciati.transazioni.length > 0) && (
         <div className="mt-6 bg-white dark:bg-gray-800 rounded-lg shadow border-l-4 border-gray-400">
           <button
             onClick={() => setTralasciatiOpen(o => !o)}
@@ -1139,7 +1265,7 @@ export default function SoggettiPage() {
               <Archive className="h-5 w-5 text-gray-500" />
               <div>
                 <p className="font-semibold text-gray-900 dark:text-white">
-                  Tralasciati · {tralasciati.fatture.length} fatture · {tralasciati.transazioni.length} transazioni
+                  Tralasciati · {filteredTralasciati.fatture.length} fatture · {filteredTralasciati.transazioni.length} transazioni
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Voci escluse dalla riconciliazione, con motivazione registrata. Puoi ripristinarle.
@@ -1149,11 +1275,11 @@ export default function SoggettiPage() {
           </button>
           {tralasciatiOpen && (
             <div className="border-t dark:border-gray-700 px-6 py-4">
-              {tralasciati.fatture.length > 0 && (
+              {filteredTralasciati.fatture.length > 0 && (
                 <div className="mb-4">
                   <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Fatture tralasciate</h4>
                   <div className="space-y-1 max-h-72 overflow-y-auto">
-                    {tralasciati.fatture.map(f => (
+                    {filteredTralasciati.fatture.map(f => (
                       <div key={f.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
                         <TipoFatturaBadge tipo={f.tipo} />
                         <NotaCreditoBadge tipoDocumento={f.tipo_documento} />
@@ -1180,11 +1306,11 @@ export default function SoggettiPage() {
                   </div>
                 </div>
               )}
-              {tralasciati.transazioni.length > 0 && (
+              {filteredTralasciati.transazioni.length > 0 && (
                 <div>
                   <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Transazioni tralasciate</h4>
                   <div className="space-y-1 max-h-72 overflow-y-auto">
-                    {tralasciati.transazioni.map(t => (
+                    {filteredTralasciati.transazioni.map(t => (
                       <div key={t.id} className="flex flex-wrap items-center gap-2 text-sm bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
                         <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
                         <span className="text-gray-500 dark:text-gray-400">{formatDate(t.data)}</span>

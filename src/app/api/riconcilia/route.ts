@@ -89,24 +89,36 @@ export async function DELETE(request: NextRequest) {
   const supabase = createServerClient()
   const { searchParams } = new URL(request.url)
   const fatturaId = searchParams.get('fatturaId')
-  
+
   if (!fatturaId) {
     return NextResponse.json({ error: 'Missing fatturaId' }, { status: 400 })
   }
-  
-  // Trova la transazione collegata
+
+  // Trova la transazione collegata. PRIMA in riconciliazioni; in fallback su
+  // fatture.transazione_id (caso legacy: vecchi auto-match prima del fix
+  // scrivevano SOLO fatture.transazione_id, senza riga in riconciliazioni).
   const { data: ric } = await supabase
     .from('riconciliazioni')
     .select('transazione_id')
     .eq('fattura_id', fatturaId)
-    .single()
-  
-  // Rimuovi il collegamento
+    .maybeSingle()
+
+  let linkedTransId: string | null = ric?.transazione_id ?? null
+  if (!linkedTransId) {
+    const { data: fat } = await supabase
+      .from('fatture')
+      .select('transazione_id')
+      .eq('id', fatturaId)
+      .maybeSingle()
+    linkedTransId = (fat?.transazione_id as string | null | undefined) ?? null
+  }
+
+  // Rimuovi il collegamento dalla tabella riconciliazioni (se esiste)
   await supabase
     .from('riconciliazioni')
     .delete()
     .eq('fattura_id', fatturaId)
-  
+
   // Aggiorna stato fattura e azzera transazione_id
   await supabase
     .from('fatture')
@@ -115,22 +127,30 @@ export async function DELETE(request: NextRequest) {
       transazione_id: null,
     })
     .eq('id', fatturaId)
-  
-  // Se la transazione non ha più fatture collegate, mettila da_riconciliare
-  if (ric?.transazione_id) {
-    const { count } = await supabase
+
+  // Se la trans esisteva, verifica se ha ANCORA fatture collegate dopo la
+  // rimozione. Controlliamo entrambe le fonti: riconciliazioni table e
+  // fatture.transazione_id. Solo se entrambe sono vuote rimettiamo la trans
+  // a 'da_riconciliare'.
+  if (linkedTransId) {
+    const { count: ricCount } = await supabase
       .from('riconciliazioni')
       .select('*', { count: 'exact', head: true })
-      .eq('transazione_id', ric.transazione_id)
-    
-    if (count === 0) {
+      .eq('transazione_id', linkedTransId)
+
+    const { count: fatCount } = await supabase
+      .from('fatture')
+      .select('*', { count: 'exact', head: true })
+      .eq('transazione_id', linkedTransId)
+
+    if ((ricCount ?? 0) === 0 && (fatCount ?? 0) === 0) {
       await supabase
         .from('transazioni')
         .update({ stato_riconciliazione: 'da_riconciliare' })
-        .eq('id', ric.transazione_id)
+        .eq('id', linkedTransId)
     }
   }
-  
+
   return NextResponse.json({ success: true })
 }
 

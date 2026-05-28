@@ -362,6 +362,9 @@ export default function SoggettiPage() {
   // Modal "Sposta N transazioni orfane sotto un soggetto"
   const [multiAssignTransModal, setMultiAssignTransModal] = useState<{ rows: Orfana[]; toDenom: string } | null>(null)
 
+  // Modal "Sposta righe (fatture+trans) selezionate dentro soggetti in altro soggetto"
+  const [moveRigheModal, setMoveRigheModal] = useState<{ fattureIds: string[]; transIds: string[]; toDenom: string } | null>(null)
+
   // Modal "Rinomina soggetto"
   const [renameModal, setRenameModal] = useState<{ soggetto: Soggetto; newName: string } | null>(null)
 
@@ -905,6 +908,65 @@ export default function SoggettiPage() {
       motivo: '',
       custom: '',
     })
+  }
+
+  function openMoveRigheSelezionate() {
+    const fattureIds = Array.from(selectedFatture)
+    const transIds = Array.from(selectedTrans)
+    if (fattureIds.length === 0 && transIds.length === 0) return
+    setMoveRigheModal({ fattureIds, transIds, toDenom: '' })
+  }
+
+  async function submitMoveRighe() {
+    if (!moveRigheModal) return
+    const target = moveRigheModal.toDenom.trim()
+    if (!target) {
+      showFeedback('err', 'Indica il soggetto destinazione')
+      return
+    }
+    try {
+      const isExisting = soggettiDenoms.some(d => d.toLowerCase().trim() === target.toLowerCase().trim())
+      const calls: Promise<Response>[] = []
+      // Transazioni: cambio della controparte → uso /api/transazioni/assign-soggetto
+      if (moveRigheModal.transIds.length > 0) {
+        calls.push(fetch('/api/transazioni/assign-soggetto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transazione_ids: moveRigheModal.transIds,
+            soggetto: target,
+            createNew: !isExisting,
+          }),
+        }))
+      }
+      // Fatture: cambio denominazione cliente/fornitore → /api/soggetti/merge con fattura_ids
+      if (moveRigheModal.fattureIds.length > 0) {
+        calls.push(fetch('/api/soggetti/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: target,
+            fattura_ids: moveRigheModal.fattureIds,
+          }),
+        }))
+      }
+      const results = await Promise.all(calls)
+      for (const r of results) {
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}))
+          throw new Error(d.error || `Errore ${r.status}`)
+        }
+      }
+      showFeedback(
+        'ok',
+        `Spostati ${moveRigheModal.fattureIds.length} fatture e ${moveRigheModal.transIds.length} transazioni in "${target}"`,
+      )
+      setMoveRigheModal(null)
+      deselezionaTutteRighe()
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
   }
 
   async function submitMerge() {
@@ -1503,6 +1565,13 @@ export default function SoggettiPage() {
               className="px-3 py-1 bg-purple-500 hover:bg-purple-400 rounded text-xs font-medium"
             >
               Deseleziona
+            </button>
+            <button
+              onClick={openMoveRigheSelezionate}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-white rounded text-xs font-medium"
+              title="Sposta queste righe in un altro soggetto (esistente o nuovo)"
+            >
+              <GitMerge className="h-3 w-3" /> Sposta in soggetto…
             </button>
             <button
               onClick={openIgnoraRigheSelezionate}
@@ -2625,6 +2694,75 @@ export default function SoggettiPage() {
                   className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
                 >
                   <GitMerge className="h-4 w-4" /> Sposta {multiAssignTransModal.rows.length} trans
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Modal: sposta N righe (fatture+trans) dentro un altro soggetto */}
+      {moveRigheModal && (() => {
+        const target = moveRigheModal.toDenom.trim()
+        const isExisting = target ? soggettiDenoms.some(d => d.toLowerCase().trim() === target.toLowerCase().trim()) : false
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setMoveRigheModal(null)}
+          >
+            <div
+              className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+                Sposta righe in un altro soggetto
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                Le righe selezionate vengono spostate sotto il soggetto target:
+                le transazioni cambiano controparte, le fatture cambiano denominazione
+                cliente/fornitore.
+              </p>
+              <div className="bg-gray-50 dark:bg-gray-900 rounded p-3 mb-4 text-xs">
+                <p className="text-gray-700 dark:text-gray-200">
+                  <strong>{moveRigheModal.fattureIds.length}</strong> fatture · <strong>{moveRigheModal.transIds.length}</strong> transazioni
+                </p>
+                <p className="text-amber-700 dark:text-amber-300 mt-2">
+                  ⚠ Se una riga era già matchata con la sua controparte, il match a livello DB resta ma probabilmente non avrà più senso. Verifica dopo lo spostamento.
+                </p>
+              </div>
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+                Soggetto target <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                list="move-righe-target-list"
+                value={moveRigheModal.toDenom}
+                onChange={(e) => setMoveRigheModal(prev => prev ? { ...prev, toDenom: e.target.value } : null)}
+                placeholder="Nome del soggetto (esistente o nuovo)"
+                className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                autoFocus
+              />
+              <datalist id="move-righe-target-list">
+                {soggettiDenoms.map(d => <option key={d} value={d} />)}
+              </datalist>
+              {target && (
+                <p className={`text-[11px] mt-1 ${isExisting ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {isExisting ? '✓ Soggetto esistente' : 'ⓘ Soggetto nuovo — verrà creato'}
+                </p>
+              )}
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  onClick={() => setMoveRigheModal(null)}
+                  className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+                >
+                  Annulla
+                </button>
+                <button
+                  onClick={submitMoveRighe}
+                  disabled={!target}
+                  className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
+                >
+                  <GitMerge className="h-4 w-4" /> Sposta righe
                 </button>
               </div>
             </div>

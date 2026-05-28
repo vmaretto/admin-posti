@@ -334,8 +334,11 @@ export default function SoggettiPage() {
     | { kind: 'multi-righe'; fattureIds: string[]; transIds: string[] }
   const [ignoraModal, setIgnoraModal] = useState<{ target: IgnoraTarget; motivo: string; custom: string } | null>(null)
 
-  // Modal "Accorpa soggetti"
+  // Modal "Accorpa soggetti" (1 a 1)
   const [mergeModal, setMergeModal] = useState<{ from: Soggetto; toDenom: string } | null>(null)
+
+  // Modal "Accorpa N soggetti selezionati"
+  const [multiMergeModal, setMultiMergeModal] = useState<{ from: Soggetto[]; toDenom: string } | null>(null)
 
   // Modal "Rinomina soggetto"
   const [renameModal, setRenameModal] = useState<{ soggetto: Soggetto; newName: string } | null>(null)
@@ -425,6 +428,53 @@ export default function SoggettiPage() {
       motivo: '',
       custom: '',
     })
+  }
+
+  function openMultiMerge() {
+    if (selectedKeys.size < 2) {
+      showFeedback('err', 'Seleziona almeno 2 soggetti per l’accorpamento')
+      return
+    }
+    const selezionati = soggetti.filter(s => selectedKeys.has(s.key))
+    if (selezionati.length < 2) return
+    // Default target: il primo selezionato (in genere quello più "pulito" come nome)
+    setMultiMergeModal({ from: selezionati, toDenom: '' })
+  }
+
+  async function submitMultiMerge() {
+    if (!multiMergeModal) return
+    const target = multiMergeModal.toDenom.trim()
+    if (!target) {
+      showFeedback('err', 'Indica il soggetto destinazione')
+      return
+    }
+    try {
+      // Tutte le fatture e transazioni dei N soggetti finiscono sotto il target
+      const fattureIds = multiMergeModal.from.flatMap(s => s.fatture.map(f => f.id))
+      const transIds = multiMergeModal.from.flatMap(s => s.transazioni.map(t => t.id))
+      const fromKeys = multiMergeModal.from.map(s => s.key)
+      const res = await fetch('/api/soggetti/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_keys: fromKeys,
+          to: target,
+          fattura_ids: fattureIds,
+          transazione_ids: transIds,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback(
+        'ok',
+        `Accorpati ${multiMergeModal.from.length} soggetti in "${target}" (${data.fatture_aggiornate} fatture · ${data.transazioni_aggiornate} transazioni)`,
+      )
+      setMultiMergeModal(null)
+      setSelectedKeys(new Set())
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
   }
 
   async function ripristinaFattura(id: string) {
@@ -1208,6 +1258,14 @@ export default function SoggettiPage() {
               className="px-3 py-1 bg-indigo-500 hover:bg-indigo-400 rounded text-xs font-medium"
             >
               Deseleziona
+            </button>
+            <button
+              onClick={openMultiMerge}
+              disabled={selectedKeys.size < 2}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-xs font-medium"
+              title={selectedKeys.size < 2 ? 'Servono almeno 2 soggetti' : 'Accorpa i selezionati in un unico soggetto'}
+            >
+              <GitMerge className="h-3 w-3" /> Accorpa selezionati…
             </button>
             <button
               onClick={openIgnoraSelezionati}
@@ -1994,6 +2052,90 @@ export default function SoggettiPage() {
           </div>
         </div>
       )}
+
+      {/* Modal: accorpa N soggetti selezionati in un unico target */}
+      {multiMergeModal && (() => {
+        const totFatture = multiMergeModal.from.reduce((s, x) => s + x.fatture.length, 0)
+        const totTrans = multiMergeModal.from.reduce((s, x) => s + x.transazioni.length, 0)
+        const fromKeysSet = new Set(multiMergeModal.from.map(s => s.key))
+        // Suggerimenti: prima i nomi dei soggetti selezionati (utile se uno è
+        // quello "canonico"), poi tutti gli altri esistenti.
+        const selezionatiNomi = multiMergeModal.from.map(s => s.denominazione)
+        const altriNomi = soggettiDenoms.filter(d => !selezionatiNomi.includes(d))
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setMultiMergeModal(null)}
+          >
+            <div
+              className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+                Accorpa {multiMergeModal.from.length} soggetti
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                Le fatture e transazioni dei seguenti soggetti verranno spostate sotto il target
+                scelto. Operazione non facilmente reversibile.
+              </p>
+              <div className="bg-gray-50 dark:bg-gray-900 rounded p-3 mb-4 max-h-40 overflow-y-auto text-xs">
+                <p className="font-semibold text-gray-700 dark:text-gray-200 mb-1">Soggetti sorgente ({multiMergeModal.from.length}):</p>
+                <ul className="space-y-0.5 text-gray-700 dark:text-gray-300">
+                  {multiMergeModal.from.map(s => (
+                    <li key={s.key} className="flex justify-between gap-2">
+                      <span className="truncate">• {s.denominazione}</span>
+                      <span className="text-gray-500 whitespace-nowrap">{s.fatture.length}f · {s.transazioni.length}t</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 font-medium text-gray-700 dark:text-gray-200">
+                  Totale da spostare: {totFatture} fatture · {totTrans} transazioni
+                </p>
+              </div>
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+                Accorpa in… <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                list="multi-merge-target-list"
+                value={multiMergeModal.toDenom}
+                onChange={(e) => setMultiMergeModal(prev => prev ? { ...prev, toDenom: e.target.value } : null)}
+                placeholder="Nome del soggetto target (puoi scegliere uno dei selezionati o un altro esistente)"
+                className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+              />
+              <datalist id="multi-merge-target-list">
+                {selezionatiNomi.map(d => <option key={`sel-${d}`} value={d}>(selezionato) {d}</option>)}
+                {altriNomi.map(d => <option key={`oth-${d}`} value={d}>{d}</option>)}
+              </datalist>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                Suggerimento: scegli il nome più pulito / canonico fra i selezionati.
+              </p>
+              {multiMergeModal.toDenom && !fromKeysSet.has(
+                multiMergeModal.toDenom.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()
+              ) && !soggettiDenoms.includes(multiMergeModal.toDenom) && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
+                  ⓘ Soggetto nuovo — verrà creato.
+                </p>
+              )}
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  onClick={() => setMultiMergeModal(null)}
+                  className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+                >
+                  Annulla
+                </button>
+                <button
+                  onClick={submitMultiMerge}
+                  disabled={!multiMergeModal.toDenom.trim()}
+                  className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
+                >
+                  <GitMerge className="h-4 w-4" /> Accorpa {multiMergeModal.from.length} soggetti
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Modal: Conferma match con nota opzionale */}
       {matchModal && (

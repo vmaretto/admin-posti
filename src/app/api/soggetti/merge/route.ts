@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { from_key, from, to, fattura_ids, transazione_ids } = body
+  const { from_key, from_keys, from, to, fattura_ids, transazione_ids } = body
   if (!to || typeof to !== 'string') {
     return NextResponse.json({ error: 'to is required' }, { status: 400 })
   }
@@ -143,9 +143,23 @@ export async function POST(request: NextRequest) {
   }
 
   // Aggiorna soggetti_cluster: assicura presenza del nuovo soggetto.
-  // Se conosciamo la chiave sorgente, rimuoviamo anche quella.
-  if (typeof from_key === 'string' && from_key.trim() && from_key.trim() !== toNorm) {
-    await supabase.from('soggetti_cluster').delete().eq('nome_normalizzato', from_key.trim())
+  // Rimuoviamo TUTTE le chiavi sorgente passate (sia from_key singolo, sia
+  // from_keys[] per accorpamento multiplo). Saltiamo la chiave target stessa.
+  const keysToRemove = new Set<string>()
+  if (typeof from_key === 'string' && from_key.trim()) {
+    keysToRemove.add(from_key.trim())
+  }
+  if (Array.isArray(from_keys)) {
+    for (const k of from_keys) {
+      if (typeof k === 'string' && k.trim()) keysToRemove.add(k.trim())
+    }
+  }
+  keysToRemove.delete(toNorm) // mai cancellare il target
+  if (keysToRemove.size > 0) {
+    await supabase
+      .from('soggetti_cluster')
+      .delete()
+      .in('nome_normalizzato', Array.from(keysToRemove))
   }
   await supabase
     .from('soggetti_cluster')

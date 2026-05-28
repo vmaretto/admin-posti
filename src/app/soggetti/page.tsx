@@ -346,6 +346,12 @@ export default function SoggettiPage() {
   // Modal "Assegna N gruppi orfani al soggetto target"
   const [multiAssignModal, setMultiAssignModal] = useState<{ groups: OrfanaGroup[]; toDenom: string } | null>(null)
 
+  // Selezione multipla di SINGOLE TRANSAZIONI orfane (dentro i gruppi espansi)
+  const [selectedOrphanTrans, setSelectedOrphanTrans] = useState<Set<string>>(new Set())
+
+  // Modal "Sposta N transazioni orfane sotto un soggetto"
+  const [multiAssignTransModal, setMultiAssignTransModal] = useState<{ rows: Orfana[]; toDenom: string } | null>(null)
+
   // Modal "Rinomina soggetto"
   const [renameModal, setRenameModal] = useState<{ soggetto: Soggetto; newName: string } | null>(null)
 
@@ -545,6 +551,75 @@ export default function SoggettiPage() {
     if (groups.length === 0) return
     const transIds = groups.flatMap(g => g.transazioni.map(t => t.id))
     // Riuso il kind 'multi-righe' che già gestisce ignora batch di trans/fatture
+    setIgnoraModal({
+      target: { kind: 'multi-righe', fattureIds: [], transIds },
+      motivo: '',
+      custom: '',
+    })
+  }
+
+  // ----- Selezione multipla di SINGOLE TRANSAZIONI ORFANE -----
+  // (sottoinsieme di righe scelte all'interno dei gruppi, anche da gruppi diversi)
+
+  function toggleSelectOrphanTrans(id: string) {
+    setSelectedOrphanTrans(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function deselezionaOrphanTrans() {
+    setSelectedOrphanTrans(new Set())
+  }
+
+  // Risale dalle trans selezionate alle righe Orfana (per riepilogo nel modal)
+  function getSelectedOrphanRows(): Orfana[] {
+    const all: Orfana[] = []
+    for (const g of orfaneGroups) {
+      for (const t of g.transazioni) {
+        if (selectedOrphanTrans.has(t.id)) all.push(t)
+      }
+    }
+    return all
+  }
+
+  function openMultiAssignTrans() {
+    const rows = getSelectedOrphanRows()
+    if (rows.length === 0) return
+    setMultiAssignTransModal({ rows, toDenom: '' })
+  }
+
+  async function submitMultiAssignTrans() {
+    if (!multiAssignTransModal) return
+    const target = multiAssignTransModal.toDenom.trim()
+    if (!target) {
+      showFeedback('err', 'Indica il soggetto destinazione')
+      return
+    }
+    try {
+      const transIds = multiAssignTransModal.rows.map(t => t.id)
+      const isExisting = soggettiDenoms.some(d => d.toLowerCase().trim() === target.toLowerCase().trim())
+      const res = await fetch('/api/transazioni/assign-soggetto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transazione_ids: transIds, soggetto: target, createNew: !isExisting }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `${transIds.length} transazioni assegnate a "${target}"`)
+      setMultiAssignTransModal(null)
+      setSelectedOrphanTrans(new Set())
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
+
+  function openIgnoraOrphanTransSelezionate() {
+    if (selectedOrphanTrans.size === 0) return
+    const transIds = Array.from(selectedOrphanTrans)
     setIgnoraModal({
       target: { kind: 'multi-righe', fattureIds: [], transIds },
       motivo: '',
@@ -880,6 +955,7 @@ export default function SoggettiPage() {
         setIgnoraModal(null)
         deselezionaTutteRighe()
         setSelectedOrfani(new Set()) // ramo riusato anche dall'azione bulk sui gruppi orfani
+        setSelectedOrphanTrans(new Set()) // e dall'azione bulk sulle singole righe orfane
         await load()
         return
       }
@@ -1475,6 +1551,41 @@ export default function SoggettiPage() {
         )
       })()}
 
+      {/* Selection toolbar — SINGOLE righe orfane */}
+      {selectedOrphanTrans.size > 0 && (() => {
+        const rows = getSelectedOrphanRows()
+        const totImp = rows.reduce((s, r) => s + Math.abs(r.importo), 0)
+        return (
+          <div className="sticky top-2 z-40 mb-4 bg-orange-600 text-white rounded-md shadow-lg px-4 py-2 flex items-center justify-between gap-4 flex-wrap">
+            <span className="font-medium text-sm">
+              {rows.length} transazioni orfane selezionate · {formatCurrency(totImp)}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={deselezionaOrphanTrans}
+                className="px-3 py-1 bg-orange-500 hover:bg-orange-400 rounded text-xs font-medium"
+              >
+                Deseleziona
+              </button>
+              <button
+                onClick={openMultiAssignTrans}
+                className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-white rounded text-xs font-medium"
+                title="Sposta queste transazioni sotto un soggetto (esistente o nuovo)"
+              >
+                <GitMerge className="h-3 w-3" /> Sposta in soggetto…
+              </button>
+              <button
+                onClick={openIgnoraOrphanTransSelezionate}
+                className="inline-flex items-center gap-1 px-3 py-1 bg-red-500 hover:bg-red-400 text-white rounded text-xs font-medium"
+                title="Tralascia le transazioni selezionate"
+              >
+                <Trash2 className="h-3 w-3" /> Tralascia selezionate…
+              </button>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Orphan groups */}
       {filteredOrfaneGroups.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow mb-6 border-l-4 border-amber-500">
@@ -1615,28 +1726,45 @@ export default function SoggettiPage() {
                     {/* Expanded transactions */}
                     {isOpen && (
                       <div className="mt-3 ml-7 space-y-1 max-h-64 overflow-y-auto">
-                        {group.transazioni.map(t => (
-                          <div key={t.id} className="flex items-center gap-3 text-xs bg-gray-50 dark:bg-gray-900 rounded px-2 py-1.5">
-                            <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
-                            <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatDate(t.data)}</span>
-                            <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
-                              {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
-                            </span>
-                            <span className="text-gray-600 dark:text-gray-300 truncate flex-1" title={cleanText(t.controparte) || cleanText(t.descrizione) || ''}>
-                              {cleanText(t.controparte) || cleanText(t.descrizione) || <em className="text-gray-400">—</em>}
-                            </span>
-                            <button
-                              onClick={() => openIgnoraTrans(t)}
-                              className="text-gray-400 hover:text-red-600"
-                              title="Tralascia questa transazione (con motivazione)"
+                        {group.transazioni.map(t => {
+                          const isTransSelected = selectedOrphanTrans.has(t.id)
+                          return (
+                            <div
+                              key={t.id}
+                              className={`flex items-center gap-3 text-xs rounded px-2 py-1.5 ${
+                                isTransSelected
+                                  ? 'bg-orange-100 dark:bg-orange-950/40 ring-1 ring-orange-400'
+                                  : 'bg-gray-50 dark:bg-gray-900'
+                              }`}
                             >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                            <Link href={`/transazioni?id=${t.id}`}>
-                              <ExternalLink className="h-3 w-3 text-gray-400 hover:text-indigo-600" />
-                            </Link>
-                          </div>
-                        ))}
+                              <input
+                                type="checkbox"
+                                checked={isTransSelected}
+                                onChange={() => toggleSelectOrphanTrans(t.id)}
+                                className="h-3.5 w-3.5 rounded border-gray-300 text-orange-600 flex-shrink-0"
+                                title="Seleziona questa transazione (azione in batch)"
+                              />
+                              <span className="font-medium capitalize text-gray-900 dark:text-white">{t.conto}</span>
+                              <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatDate(t.data)}</span>
+                              <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-600' : 'text-red-600'}`}>
+                                {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
+                              </span>
+                              <span className="text-gray-600 dark:text-gray-300 truncate flex-1" title={cleanText(t.controparte) || cleanText(t.descrizione) || ''}>
+                                {cleanText(t.controparte) || cleanText(t.descrizione) || <em className="text-gray-400">—</em>}
+                              </span>
+                              <button
+                                onClick={() => openIgnoraTrans(t)}
+                                className="text-gray-400 hover:text-red-600"
+                                title="Tralascia questa transazione (con motivazione)"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                              <Link href={`/transazioni?id=${t.id}`}>
+                                <ExternalLink className="h-3 w-3 text-gray-400 hover:text-indigo-600" />
+                              </Link>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
                   </div>
@@ -2331,6 +2459,85 @@ export default function SoggettiPage() {
                   className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
                 >
                   <GitMerge className="h-4 w-4" /> Accorpa in {target ? `"${target}"` : 'soggetto'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Modal: sposta N singole transazioni orfane sotto un soggetto */}
+      {multiAssignTransModal && (() => {
+        const totImp = multiAssignTransModal.rows.reduce((s, r) => s + Math.abs(r.importo), 0)
+        const target = multiAssignTransModal.toDenom.trim()
+        const isExisting = target ? soggettiDenoms.some(d => d.toLowerCase().trim() === target.toLowerCase().trim()) : false
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setMultiAssignTransModal(null)}
+          >
+            <div
+              className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+                Sposta {multiAssignTransModal.rows.length} transazioni in un soggetto
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                Le transazioni selezionate verranno tolte dai loro gruppi orfani e assegnate
+                al soggetto target. Diventano candidate per i match con le sue fatture.
+              </p>
+              <div className="bg-gray-50 dark:bg-gray-900 rounded p-3 mb-4 max-h-40 overflow-y-auto text-xs">
+                <ul className="space-y-0.5 text-gray-700 dark:text-gray-300">
+                  {multiAssignTransModal.rows.slice(0, 12).map(t => (
+                    <li key={t.id} className="flex justify-between gap-2">
+                      <span className="truncate">• {formatDate(t.data)} · {cleanText(t.controparte) || cleanText(t.descrizione) || '—'}</span>
+                      <span className={`whitespace-nowrap font-medium ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
+                        {t.tipo === 'entrata' ? '+' : '-'}{formatCurrency(Math.abs(t.importo))}
+                      </span>
+                    </li>
+                  ))}
+                  {multiAssignTransModal.rows.length > 12 && (
+                    <li className="text-gray-500 italic">… e altre {multiAssignTransModal.rows.length - 12} righe</li>
+                  )}
+                </ul>
+                <p className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 font-medium text-gray-700 dark:text-gray-200">
+                  Totale: {multiAssignTransModal.rows.length} transazioni · {formatCurrency(totImp)}
+                </p>
+              </div>
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+                Soggetto target <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                list="multi-assign-trans-target-list"
+                value={multiAssignTransModal.toDenom}
+                onChange={(e) => setMultiAssignTransModal(prev => prev ? { ...prev, toDenom: e.target.value } : null)}
+                placeholder="Nome del soggetto (esistente o nuovo)"
+                className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                autoFocus
+              />
+              <datalist id="multi-assign-trans-target-list">
+                {soggettiDenoms.map(d => <option key={d} value={d} />)}
+              </datalist>
+              {target && (
+                <p className={`text-[11px] mt-1 ${isExisting ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {isExisting ? '✓ Soggetto esistente' : 'ⓘ Soggetto nuovo — verrà creato'}
+                </p>
+              )}
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  onClick={() => setMultiAssignTransModal(null)}
+                  className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+                >
+                  Annulla
+                </button>
+                <button
+                  onClick={submitMultiAssignTrans}
+                  disabled={!target}
+                  className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
+                >
+                  <GitMerge className="h-4 w-4" /> Sposta {multiAssignTransModal.rows.length} trans
                 </button>
               </div>
             </div>

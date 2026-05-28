@@ -840,7 +840,24 @@ export default function SoggettiPage() {
   }
 
   const filteredSoggetti = useMemo(() => soggetti.filter(s => {
-    if (search && !s.denominazione.toLowerCase().includes(search.toLowerCase())) return false
+    if (search) {
+      const q = search.toLowerCase()
+      // Match su denominazione del soggetto, oppure su qualsiasi numero/importo/controparte
+      // delle sue fatture/transazioni
+      const inDenom = s.denominazione.toLowerCase().includes(q)
+      const inFatture = s.fatture.some(f =>
+        (f.numero || '').toLowerCase().includes(q) ||
+        String(f.totale).includes(q) ||
+        (f.denominazione_cliente || '').toLowerCase().includes(q) ||
+        (f.denominazione_fornitore || '').toLowerCase().includes(q)
+      )
+      const inTrans = s.transazioni.some(t =>
+        (t.controparte || '').toLowerCase().includes(q) ||
+        (t.descrizione || '').toLowerCase().includes(q) ||
+        String(t.importo).includes(q)
+      )
+      if (!inDenom && !inFatture && !inTrans) return false
+    }
     if (soloNonRiconciliati) {
       // Mostra solo soggetti che hanno almeno una fattura o transazione "da_riconciliare"
       // (le riconciliate e le tralasciate non contano).
@@ -867,7 +884,8 @@ export default function SoggettiPage() {
       g.varianti.some(v => v.toLowerCase().includes(q)) ||
       g.transazioni.some(t =>
         (t.descrizione || '').toLowerCase().includes(q) ||
-        (t.controparte || '').toLowerCase().includes(q)
+        (t.controparte || '').toLowerCase().includes(q) ||
+        String(t.importo).includes(q)
       )
     )
   }, [orfaneGroups, search])
@@ -879,12 +897,14 @@ export default function SoggettiPage() {
       fatture: tralasciati.fatture.filter(f =>
         f.numero.toLowerCase().includes(q) ||
         (f.denominazione || '').toLowerCase().includes(q) ||
-        (f.motivo || '').toLowerCase().includes(q)
+        (f.motivo || '').toLowerCase().includes(q) ||
+        String(f.totale).includes(q)
       ),
       transazioni: tralasciati.transazioni.filter(t =>
         (t.controparte || '').toLowerCase().includes(q) ||
         (t.descrizione || '').toLowerCase().includes(q) ||
-        (t.motivo || '').toLowerCase().includes(q)
+        (t.motivo || '').toLowerCase().includes(q) ||
+        String(t.importo).includes(q)
       ),
     }
   }, [tralasciati, search])

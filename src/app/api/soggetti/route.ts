@@ -307,6 +307,29 @@ export async function GET() {
       existing.data.transazioni.push(...data.transazioni)
     }
   }
+  // ALIAS DEDUP: fonde soggetti dove uno è un alias (substring/parole) dell'altro.
+  // Es: "LA PECORA NERA EDITORE DI CARGIANI SIMON" → "La Pecora Nera Editore".
+  // Manteniamo il display più CORTO come canonico (più leggibile).
+  const sortedKeys = Array.from(dedupedMap.keys())
+    .sort((a, b) => dedupedMap.get(a)!.data.originalName.length - dedupedMap.get(b)!.data.originalName.length)
+  const aliasMerged = new Set<string>()
+  for (let i = 0; i < sortedKeys.length; i++) {
+    const shorterKey = sortedKeys[i]
+    if (aliasMerged.has(shorterKey)) continue
+    const shorter = dedupedMap.get(shorterKey)!
+    for (let j = i + 1; j < sortedKeys.length; j++) {
+      const longerKey = sortedKeys[j]
+      if (aliasMerged.has(longerKey)) continue
+      const longer = dedupedMap.get(longerKey)!
+      if (isAliasName(shorter.data.originalName, longer.data.originalName)) {
+        shorter.data.fatture.push(...longer.data.fatture)
+        shorter.data.transazioni.push(...longer.data.transazioni)
+        aliasMerged.add(longerKey)
+      }
+    }
+  }
+  for (const k of aliasMerged) dedupedMap.delete(k)
+
   // Dedup anche fatture e transazioni per id (safety net contro doppi inserimenti)
   for (const { data } of dedupedMap.values()) {
     const seenF = new Set<string>()

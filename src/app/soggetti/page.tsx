@@ -252,7 +252,7 @@ export default function SoggettiPage() {
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
   const [tralasciati, setTralasciati] = useState<{ fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }>({ fatture: [], transazioni: [] })
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
-  const [tralasciatiOpen, setTralasciatiOpen] = useState(false)
+  const [tralasciatiOpen, setTralasciatiOpen] = useState(true)
   // Riga espansa per dettagli inline: key = "f:{id}" o "t:{id}"
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
 
@@ -1181,22 +1181,35 @@ export default function SoggettiPage() {
                   </div>
                 </div>
                 <div className="text-right flex items-center gap-4">
-                  <div className="flex gap-6">
-                    <div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Fatture {soggetto.noteCreditoCount && soggetto.noteCreditoCount > 0 ? '(netto NC)' : ''}</p>
-                      <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(soggetto.totaleFatture)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Transazioni</p>
-                      <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(soggetto.totaleTransazioni)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Saldo</p>
-                      <p className={`font-bold ${soggetto.saldo >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {formatCurrency(soggetto.saldo)}
-                      </p>
-                    </div>
-                  </div>
+                  {(() => {
+                    // Calcolo client-side, garantisce coerenza con le righe mostrate
+                    const totFatture = soggetto.fatture.reduce((s, f) => {
+                      const sign = f.tipo_documento === 'nota_credito' ? -1 : 1
+                      return s + sign * (f.totale || 0)
+                    }, 0)
+                    const totTransazioni = soggetto.transazioni.reduce((s, t) => s + (t.importo || 0), 0)
+                    const saldo = totFatture - totTransazioni
+                    return (
+                      <div className="flex gap-6">
+                        <div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">
+                            Fatture {soggetto.noteCreditoCount && soggetto.noteCreditoCount > 0 ? '(netto NC)' : ''}
+                          </p>
+                          <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(totFatture)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Transazioni</p>
+                          <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(totTransazioni)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase">Saldo</p>
+                          <p className={`font-bold ${saldo >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {formatCurrency(saldo)}
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })()}
                   <div className="flex flex-col gap-1">
                     <button
                       onClick={(e) => { e.stopPropagation(); openRenameModal(soggetto) }}

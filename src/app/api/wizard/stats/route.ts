@@ -3,15 +3,14 @@ import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
-// Conti attesi nell'app (corrispondono alle label in fatture/page.tsx).
-// Servono per renderizzare tile anche per conti senza movimenti nel periodo.
-const CONTI_ATTESI: { key: string; label: string; hasParser: boolean }[] = [
+// Fallback se la tabella conti_config non esiste ancora (migration non lanciata).
+// Wise rimosso: ora le fonti sono configurabili dal frontend (Step 1).
+const FALLBACK_CONTI_ATTESI: { key: string; label: string; hasParser: boolean }[] = [
   { key: 'qonto', label: 'Qonto', hasParser: false },
   { key: 'sella_conto', label: 'Sella conto', hasParser: false },
   { key: 'sella_carta', label: 'Sella carta', hasParser: false },
   { key: 'paypal', label: 'PayPal', hasParser: true },
   { key: 'revolut', label: 'Revolut', hasParser: false },
-  { key: 'wise', label: 'Wise', hasParser: false },
 ]
 
 interface ContoStats {
@@ -59,6 +58,16 @@ export async function GET(request: NextRequest) {
 
   if (!from || !to) {
     return NextResponse.json({ error: 'from/to richiesti' }, { status: 400 })
+  }
+
+  // ---- Lista fonti configurate (DB con fallback) ----
+  let CONTI_ATTESI = FALLBACK_CONTI_ATTESI
+  const { data: contiCfg } = await supabase
+    .from('conti_config')
+    .select('key, label, has_parser, ordine')
+    .order('ordine', { ascending: true })
+  if (contiCfg && contiCfg.length > 0) {
+    CONTI_ATTESI = contiCfg.map(c => ({ key: c.key, label: c.label, hasParser: c.has_parser }))
   }
 
   // ---- Transazioni del periodo ----

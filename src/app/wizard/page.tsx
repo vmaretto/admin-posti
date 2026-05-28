@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   Calendar, Check, ChevronRight, Wand2, ArrowRight, RefreshCw, AlertTriangle,
-  Banknote, Receipt, Zap, Globe, ClipboardCheck,
+  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X,
 } from 'lucide-react'
 import {
   parsePeriodo, formatPeriodoSlug, defaultPeriodoSlug, PeriodoTipo, MESI_LABELS,
@@ -438,6 +438,8 @@ function WizardInner() {
               periodo={periodo}
               stats={stats}
               onNext={() => setStep(2)}
+              onReloadStats={reloadStats}
+              showFeedback={showFeedback}
             />
           )}
 
@@ -508,17 +510,63 @@ function getTileStatus(c: ContoDettaglio): TileStatus {
 }
 
 function StepMovimentiBancari({
-  periodo, stats, onNext,
-}: { periodo: ReturnType<typeof parsePeriodo>; stats: WizardStats | null; onNext: () => void }) {
+  periodo, stats, onNext, onReloadStats, showFeedback,
+}: {
+  periodo: ReturnType<typeof parsePeriodo>
+  stats: WizardStats | null
+  onNext: () => void
+  onReloadStats: () => Promise<void>
+  showFeedback: (k: 'ok' | 'err', t: string) => void
+}) {
   const conti = stats?.trans.contiDettaglio || []
   const nEmpty = conti.filter(c => c.count === 0).length
   const nPartial = conti.filter(c => c.count > 0 && c.maxGapDays > GAP_WARN_DAYS).length
+
+  const [aggiungiOpen, setAggiungiOpen] = useState(false)
+  const [newLabel, setNewLabel] = useState('')
+  const [newKey, setNewKey] = useState('')
+
+  async function aggiungiFonte() {
+    if (!newLabel.trim()) {
+      showFeedback('err', 'Indica il nome della fonte')
+      return
+    }
+    try {
+      const res = await fetch('/api/conti', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: newLabel.trim(), key: newKey.trim() || undefined }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `Fonte "${newLabel.trim()}" aggiunta`)
+      setNewLabel('')
+      setNewKey('')
+      setAggiungiOpen(false)
+      await onReloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  async function rimuoviFonte(key: string, label: string) {
+    if (!confirm(`Rimuovere la fonte "${label}"? Le trans già caricate nel DB con conto="${key}" non verranno toccate, ma la tile sparisce dal wizard.`)) return
+    try {
+      const res = await fetch(`/api/conti?key=${encodeURIComponent(key)}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `Fonte "${label}" rimossa`)
+      await onReloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
 
   return (
     <div>
       <h2 className="text-xl font-bold mb-1">Step 1 — Movimenti bancari del periodo</h2>
       <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-        Una tile per ogni conto. Verifico che per <strong>{periodo.label}</strong> ci sia tutto.
+        Una tile per ogni fonte. Verifico che per <strong>{periodo.label}</strong> ci sia tutto.
         Verde = ok, giallo = possibile gap di {GAP_WARN_DAYS}+ giorni senza movimenti, rosso = mancano i dati.
       </p>
 
@@ -529,15 +577,15 @@ function StepMovimentiBancari({
             ? 'bg-red-50 dark:bg-red-950 border-red-300 text-red-900 dark:text-red-100'
             : 'bg-amber-50 dark:bg-amber-950 border-amber-300 text-amber-900 dark:text-amber-100'
         }`}>
-          {nEmpty > 0 && <><strong>{nEmpty} conti senza movimenti</strong>{' '}</>}
+          {nEmpty > 0 && <><strong>{nEmpty} fonti senza movimenti</strong>{' '}</>}
           {nPartial > 0 && <><strong>{nPartial} con possibili gap</strong></>}
           {' — '}controlla di aver caricato tutto prima di procedere.
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
         {conti.map(c => (
-          <ContoTile key={c.conto} c={c} periodo={periodo} />
+          <ContoTile key={c.conto} c={c} periodo={periodo} onRemove={() => rimuoviFonte(c.conto, c.label)} />
         ))}
         {conti.length === 0 && (
           <p className="text-sm text-gray-500 col-span-full text-center py-4">
@@ -545,6 +593,65 @@ function StepMovimentiBancari({
           </p>
         )}
       </div>
+
+      {/* Aggiungi fonte */}
+      {!aggiungiOpen ? (
+        <button
+          onClick={() => setAggiungiOpen(true)}
+          className="mb-6 inline-flex items-center gap-1 px-3 py-2 rounded border border-dashed border-gray-400 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+        >
+          <Plus className="h-4 w-4" /> Aggiungi fonte (banca, carta, exchange…)
+        </button>
+      ) : (
+        <div className="mb-6 p-4 rounded border-2 border-dashed border-indigo-300 dark:border-indigo-700 bg-indigo-50/30 dark:bg-indigo-950/30">
+          <p className="text-sm font-medium mb-2">Nuova fonte</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-gray-400 block mb-1">
+                Nome visualizzato *
+              </label>
+              <input
+                type="text"
+                value={newLabel}
+                onChange={e => setNewLabel(e.target.value)}
+                placeholder="es. Banca XYZ, Carta business, Stripe…"
+                className="w-full text-sm border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-gray-400 block mb-1">
+                Key tecnica (opzionale)
+              </label>
+              <input
+                type="text"
+                value={newKey}
+                onChange={e => setNewKey(e.target.value)}
+                placeholder="auto dal nome se vuoto"
+                className="w-full text-sm border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600 font-mono"
+              />
+              <p className="text-[10px] text-gray-500 mt-1">
+                Identificatore univoco usato nel campo &ldquo;conto&rdquo; delle transazioni.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-3">
+            <button
+              onClick={() => { setAggiungiOpen(false); setNewLabel(''); setNewKey('') }}
+              className="px-3 py-1.5 rounded bg-gray-100 dark:bg-gray-700 text-sm"
+            >
+              Annulla
+            </button>
+            <button
+              onClick={aggiungiFonte}
+              disabled={!newLabel.trim()}
+              className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium"
+            >
+              Aggiungi
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex justify-between items-center">
         <Link href="/import" className="text-sm text-indigo-600 hover:underline">
@@ -566,7 +673,7 @@ function StepMovimentiBancari({
   )
 }
 
-function ContoTile({ c, periodo }: { c: ContoDettaglio; periodo: ReturnType<typeof parsePeriodo> }) {
+function ContoTile({ c, periodo, onRemove }: { c: ContoDettaglio; periodo: ReturnType<typeof parsePeriodo>; onRemove?: () => void }) {
   const status = getTileStatus(c)
   const styles = {
     empty: 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950',
@@ -586,8 +693,17 @@ function ContoTile({ c, periodo }: { c: ContoDettaglio; periodo: ReturnType<type
   const importLink = c.conto === 'paypal' ? '/import?type=paypal' : '/import'
 
   return (
-    <div className={`border-2 rounded-lg p-4 ${styles}`}>
-      <div className="flex items-start justify-between mb-2">
+    <div className={`relative border-2 rounded-lg p-4 ${styles}`}>
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          className="absolute top-1.5 right-1.5 text-gray-400 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400"
+          title={`Rimuovi fonte "${c.label}"`}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+      <div className="flex items-start justify-between mb-2 pr-5">
         <div className="flex items-center gap-2">
           <Banknote className="h-5 w-5 opacity-70" />
           <h3 className="font-bold text-base">{c.label}</h3>

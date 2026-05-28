@@ -921,6 +921,80 @@ export default function SoggettiPage() {
     }
   }, [search, filteredTralasciati.fatture.length, filteredTralasciati.transazioni.length])
 
+  // DEEP SEARCH: scansiona tutto l'oggetto response (soggetti, orfani, tralasciati)
+  // per qualsiasi match testuale o importo. Restituisce la posizione esatta.
+  // Risolve dubbi tipo "l'audit dice X righe ma io non le trovo da nessuna parte".
+  type DeepHit = {
+    kind: 'trans' | 'fattura'
+    where: string
+    summary: string
+    id: string
+  }
+  const deepSearchResults = useMemo<DeepHit[]>(() => {
+    if (!search) return []
+    const q = search.toLowerCase().trim()
+    if (!q) return []
+    const hits: DeepHit[] = []
+    const matchesText = (...fields: (string | number | null | undefined)[]) =>
+      fields.some(f => f != null && String(f).toLowerCase().includes(q))
+
+    for (const s of soggetti) {
+      for (const t of s.transazioni) {
+        if (matchesText(t.controparte, t.descrizione, t.riferimento, t.note, t.importo, t.importo_signed, t.id)) {
+          hits.push({
+            kind: 'trans',
+            where: `Soggetto: ${s.denominazione}`,
+            summary: `${formatDate(t.data)} · ${t.conto} · ${t.tipo === 'entrata' ? '+' : '-'}${formatCurrency(Math.abs(t.importo))} · ${t.controparte || '—'} · stato ${t.stato}`,
+            id: t.id,
+          })
+        }
+      }
+      for (const f of s.fatture) {
+        if (matchesText(f.numero, f.totale, f.denominazione_cliente, f.denominazione_fornitore, f.note, f.id)) {
+          hits.push({
+            kind: 'fattura',
+            where: `Soggetto: ${s.denominazione}`,
+            summary: `${f.numero} · ${formatDate(f.data)} · ${f.tipo} · ${formatCurrency(f.totale)} · stato ${f.stato}`,
+            id: f.id,
+          })
+        }
+      }
+    }
+    for (const g of orfaneGroups) {
+      for (const t of g.transazioni) {
+        if (matchesText(t.controparte, t.descrizione, t.importo, t.id)) {
+          hits.push({
+            kind: 'trans',
+            where: `Orfani: ${g.label}`,
+            summary: `${formatDate(t.data)} · ${t.conto} · ${t.tipo === 'entrata' ? '+' : '-'}${formatCurrency(Math.abs(t.importo))} · ${t.controparte || '—'}`,
+            id: t.id,
+          })
+        }
+      }
+    }
+    for (const t of tralasciati.transazioni) {
+      if (matchesText(t.controparte, t.descrizione, t.motivo, t.importo, t.id)) {
+        hits.push({
+          kind: 'trans',
+          where: `Tralasciati (motivo: ${t.motivo || '—'})`,
+          summary: `${formatDate(t.data)} · ${t.conto} · ${t.tipo === 'entrata' ? '+' : '-'}${formatCurrency(Math.abs(t.importo))} · ${t.controparte || '—'}`,
+          id: t.id,
+        })
+      }
+    }
+    for (const f of tralasciati.fatture) {
+      if (matchesText(f.numero, f.denominazione, f.motivo, f.totale, f.id)) {
+        hits.push({
+          kind: 'fattura',
+          where: `Tralasciati (motivo: ${f.motivo || '—'})`,
+          summary: `${f.numero} · ${formatDate(f.data)} · ${f.tipo} · ${formatCurrency(f.totale)}`,
+          id: f.id,
+        })
+      }
+    }
+    return hits
+  }, [search, soggetti, orfaneGroups, tralasciati])
+
   const orfaneTotal = useMemo(
     () => filteredOrfaneGroups.reduce((s, g) => s + g.totale, 0),
     [filteredOrfaneGroups]
@@ -1058,7 +1132,7 @@ export default function SoggettiPage() {
         />
         {search && (
           <span className="text-xs text-gray-600 dark:text-gray-300 whitespace-nowrap">
-            Risultati per <strong>&quot;{search}&quot;</strong>: <strong>{filteredSoggetti.length}</strong> soggetti · <strong>{filteredOrfaneGroups.length}</strong> gruppi orfani · <strong>{filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length}</strong> tralasciate
+            Risultati per <strong>&quot;{search}&quot;</strong>: <strong>{filteredSoggetti.length}</strong> soggetti · <strong>{filteredOrfaneGroups.length}</strong> gruppi orfani · <strong>{filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length}</strong> tralasciate · <strong>{deepSearchResults.length}</strong> match esatti
           </span>
         )}
         <label className="flex items-center gap-2 cursor-pointer">
@@ -1071,6 +1145,26 @@ export default function SoggettiPage() {
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Solo con non riconciliati</span>
         </label>
       </div>
+
+      {/* DEEP SEARCH PANEL: mostra ogni singolo record che matcha il search e la sua posizione esatta */}
+      {search && deepSearchResults.length > 0 && (
+        <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-md p-3 mb-4">
+          <p className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">
+            🔍 Trovati {deepSearchResults.length} match esatti per &quot;{search}&quot;:
+          </p>
+          <ul className="space-y-1 max-h-60 overflow-y-auto text-xs font-mono">
+            {deepSearchResults.map((h, idx) => (
+              <li key={`${h.kind}:${h.id}:${idx}`} className="text-blue-900 dark:text-blue-200">
+                <span className="text-blue-700 dark:text-blue-300 font-semibold">[{h.kind === 'trans' ? 'TRANS' : 'FATT'}]</span>
+                {' '}
+                <span className="text-purple-700 dark:text-purple-300">{h.where}</span>
+                <br />
+                <span className="ml-12 text-gray-700 dark:text-gray-300">→ {h.summary}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 rounded-md px-4 py-3 mb-4 text-sm text-indigo-900 dark:text-indigo-100">
         <strong>Suggerimento:</strong> trascina una fattura su una transazione (o viceversa) all&apos;interno dello stesso soggetto per crearne il match. Le transazioni senza soggetto vanno prima assegnate dalla sezione qui sotto.

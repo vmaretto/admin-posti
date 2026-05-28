@@ -1,6 +1,10 @@
 'use client'
 
-import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+// Disabilita il prerender statico: la pagina usa useSearchParams() (richiede
+// rendering dinamico) e dipende comunque da chiamate runtime al backend.
+export const dynamic = 'force-dynamic'
+
+import { useEffect, useState, useMemo, useRef, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
@@ -277,7 +281,18 @@ function TransazioneDetail({ t }: { t: Transazione }) {
   )
 }
 
+// Wrapper richiesto da Next.js 16: useSearchParams() dentro la pagina deve
+// stare dentro un Suspense boundary, altrimenti il build (anche turbopack)
+// fallisce con prerender-error.
 export default function SoggettiPage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-500">Caricamento…</div>}>
+      <SoggettiPageInner />
+    </Suspense>
+  )
+}
+
+function SoggettiPageInner() {
   // Periodo attivo (selezionato dal PeriodoPicker globale, vive in ?periodo=).
   const searchParams = useSearchParams()
   const periodo = useMemo(

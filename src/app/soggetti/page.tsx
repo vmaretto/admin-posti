@@ -116,10 +116,25 @@ interface OrfanaGroup {
   transazioni: Orfana[]
 }
 
+interface AuditSection {
+  totalInDb: number
+  inSoggetti: number
+  inOrfani?: number
+  inTralasciati: number
+  accounted: number
+  missing: number
+  missingIds: string[]
+}
+interface Audit {
+  transazioni: AuditSection
+  fatture: AuditSection
+}
+
 interface SoggettiResponse {
   soggetti: Soggetto[]
   orfaneGroups: OrfanaGroup[]
   tralasciati?: { fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }
+  audit?: Audit
 }
 
 type DragSource =
@@ -251,6 +266,7 @@ export default function SoggettiPage() {
   const [soggetti, setSoggetti] = useState<Soggetto[]>([])
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
   const [tralasciati, setTralasciati] = useState<{ fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }>({ fatture: [], transazioni: [] })
+  const [audit, setAudit] = useState<Audit | null>(null)
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [tralasciatiOpen, setTralasciatiOpen] = useState(true)
   // Riga espansa per dettagli inline: key = "f:{id}" o "t:{id}"
@@ -354,6 +370,7 @@ export default function SoggettiPage() {
       setSoggetti(data.soggetti || [])
       setOrfaneGroups(data.orfaneGroups || [])
       setTralasciati(data.tralasciati || { fatture: [], transazioni: [] })
+      setAudit(data.audit || null)
     } catch (e) {
       console.error(e)
       showFeedback('err', 'Errore nel caricamento')
@@ -904,6 +921,48 @@ export default function SoggettiPage() {
           {feedback.text}
         </div>
       )}
+
+      {/* Audit conteggi: verifica che tutte le trans e fatture in DB siano contabilizzate */}
+      {audit && (() => {
+        const tOk = audit.transazioni.missing === 0
+        const fOk = audit.fatture.missing === 0
+        const allOk = tOk && fOk
+        return (
+          <div className={`mb-4 px-4 py-2 rounded-md text-xs font-mono flex items-center justify-between gap-4 flex-wrap ${
+            allOk
+              ? 'bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800'
+              : 'bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-200 border-2 border-red-300 dark:border-red-700'
+          }`}>
+            <span className="flex items-center gap-1">
+              {allOk ? '✓' : '⚠️'} <strong>Audit:</strong>
+            </span>
+            <span>
+              Trans {audit.transazioni.totalInDb} in DB ={' '}
+              <span className="text-indigo-700 dark:text-indigo-300">{audit.transazioni.inSoggetti} soggetti</span>
+              {' + '}
+              <span className="text-amber-700 dark:text-amber-300">{audit.transazioni.inOrfani} orfani</span>
+              {' + '}
+              <span className="text-gray-600 dark:text-gray-400">{audit.transazioni.inTralasciati} tralasciate</span>
+              {' = '}
+              <strong>{audit.transazioni.accounted}</strong>
+              {audit.transazioni.missing > 0 && (
+                <span className="text-red-700 dark:text-red-300 font-bold"> · MANCANTI {audit.transazioni.missing} (es. {audit.transazioni.missingIds.slice(0, 3).join(', ')}{audit.transazioni.missingIds.length > 3 ? '…' : ''})</span>
+              )}
+            </span>
+            <span>
+              Fatture {audit.fatture.totalInDb} in DB ={' '}
+              <span className="text-indigo-700 dark:text-indigo-300">{audit.fatture.inSoggetti} soggetti</span>
+              {' + '}
+              <span className="text-gray-600 dark:text-gray-400">{audit.fatture.inTralasciati} tralasciate</span>
+              {' = '}
+              <strong>{audit.fatture.accounted}</strong>
+              {audit.fatture.missing > 0 && (
+                <span className="text-red-700 dark:text-red-300 font-bold"> · MANCANTI {audit.fatture.missing}</span>
+              )}
+            </span>
+          </div>
+        )
+      })()}
 
       {/* Selection toolbar — soggetti */}
       {selectedKeys.size > 0 && (

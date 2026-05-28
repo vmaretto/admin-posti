@@ -436,9 +436,53 @@ export async function GET() {
     }
   }
 
+  // AUDIT: verifica che ogni transazione e ogni fattura sia contabilizzata
+  // esattamente una volta nelle sezioni della response. Se l'audit non torna,
+  // c'è un bug nel matching e il client deve mostrare un alert.
+  const transInSoggetti = new Set<string>()
+  for (const s of soggetti) for (const t of s.transazioni) transInSoggetti.add(t.id)
+  const transInOrfani = new Set<string>()
+  for (const g of orfaneGroups) for (const t of g.transazioni) transInOrfani.add(t.id)
+  const transInTralasciati = new Set<string>(transTralasciate.map(t => t.id))
+  const allTransIds = new Set<string>((transazioni || []).map(t => t.id))
+  const accountedTrans = new Set<string>([
+    ...transInSoggetti,
+    ...transInOrfani,
+    ...transInTralasciati,
+  ])
+  const missingTrans: string[] = []
+  for (const id of allTransIds) if (!accountedTrans.has(id)) missingTrans.push(id)
+
+  const fattureInSoggetti = new Set<string>()
+  for (const s of soggetti) for (const f of s.fatture) fattureInSoggetti.add(f.id)
+  const fattureInTralasciati = new Set<string>(fattureTralasciate.map(f => f.id))
+  const allFatIds = new Set<string>((fatture || []).map(f => f.id))
+  const accountedFat = new Set<string>([...fattureInSoggetti, ...fattureInTralasciati])
+  const missingFat: string[] = []
+  for (const id of allFatIds) if (!accountedFat.has(id)) missingFat.push(id)
+
   return NextResponse.json({
     soggetti,
     orfaneGroups,
     tralasciati: { fatture: fattureTralasciate, transazioni: transTralasciate },
+    audit: {
+      transazioni: {
+        totalInDb: allTransIds.size,
+        inSoggetti: transInSoggetti.size,
+        inOrfani: transInOrfani.size,
+        inTralasciati: transInTralasciati.size,
+        accounted: accountedTrans.size,
+        missing: missingTrans.length,
+        missingIds: missingTrans.slice(0, 50), // primi 50 per debug
+      },
+      fatture: {
+        totalInDb: allFatIds.size,
+        inSoggetti: fattureInSoggetti.size,
+        inTralasciati: fattureInTralasciati.size,
+        accounted: accountedFat.size,
+        missing: missingFat.length,
+        missingIds: missingFat.slice(0, 50),
+      },
+    },
   })
 }

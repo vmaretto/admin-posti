@@ -35,11 +35,26 @@ interface PeriodoRow {
   updated_at: string
 }
 
+interface ContoDettaglio {
+  conto: string
+  label: string
+  hasParser: boolean
+  count: number
+  entrate: number
+  uscite: number
+  firstDate: string | null
+  lastDate: string | null
+  maxGapDays: number
+  presentNelDb: boolean
+}
+
 interface WizardStats {
   periodo: { from: string; to: string }
   trans: {
     totale: number
     perConto: Record<string, { count: number; entrate: number; uscite: number }>
+    contiDettaglio?: ContoDettaglio[]
+    contiAltri?: string[]
     scoperte: number
     scoperteImporto: number
     riconciliate: number
@@ -47,7 +62,15 @@ interface WizardStats {
   fatture: {
     totale: number
     emesse: number
+    emesseTotale?: number
+    emesseFirstDate?: string | null
+    emesseLastDate?: string | null
+    emesseMaxGap?: number
     ricevute: number
+    ricevuteTotale?: number
+    ricevuteFirstDate?: string | null
+    ricevuteLastDate?: string | null
+    ricevuteMaxGap?: number
     estere: number
     riconciliate: number
     scoperte: number
@@ -411,10 +434,8 @@ function WizardInner() {
 
           {/* STEP 1 — Movimenti bancari */}
           {stepCorrente === 1 && (
-            <StepGenericPlaceholder
-              n={1}
-              title="Movimenti bancari del periodo"
-              desc='Una tile per conto. Mostra quante righe ci sono nel DB per il periodo. Caricamento via /import (per ora). I parser per Qonto, Sella, Wise verranno aggiunti dopo che mi mandi i sample.'
+            <StepMovimentiBancari
+              periodo={periodo}
               stats={stats}
               onNext={() => setStep(2)}
             />
@@ -422,7 +443,7 @@ function WizardInner() {
 
           {/* STEP 2 — Fatture italiane */}
           {stepCorrente === 2 && (
-            <StepFattureIT stats={stats} onNext={() => setStep(3)} onBack={() => setStep(1)} />
+            <StepFattureIT periodo={periodo} stats={stats} onNext={() => setStep(3)} onBack={() => setStep(1)} />
           )}
 
           {/* STEP 3 — Auto-match */}
@@ -474,35 +495,285 @@ function WizardInner() {
 
 // ---- Step components (parte 1 wizard, gli altri saranno espansi) ----
 
-function StepFattureIT({
-  stats, onNext, onBack,
-}: { stats: WizardStats | null; onNext: () => void; onBack: () => void }) {
+// Soglia gap massimo accettabile (giorni) dentro il periodo per ogni conto.
+// Sopra questa soglia mostro un warning giallo.
+const GAP_WARN_DAYS = 14
+
+type TileStatus = 'empty' | 'partial' | 'ok' | 'no-parser'
+
+function getTileStatus(c: ContoDettaglio): TileStatus {
+  if (c.count === 0) return 'empty'
+  if (c.maxGapDays > GAP_WARN_DAYS) return 'partial'
+  return 'ok'
+}
+
+function StepMovimentiBancari({
+  periodo, stats, onNext,
+}: { periodo: ReturnType<typeof parsePeriodo>; stats: WizardStats | null; onNext: () => void }) {
+  const conti = stats?.trans.contiDettaglio || []
+  const nEmpty = conti.filter(c => c.count === 0).length
+  const nPartial = conti.filter(c => c.count > 0 && c.maxGapDays > GAP_WARN_DAYS).length
+
   return (
     <div>
-      <h2 className="text-xl font-bold mb-1">Step 2 — Fatture italiane SDI</h2>
-      <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
-        Conteggi nel periodo. Per importare nuove SDI usa <Link href="/import" className="text-indigo-600 hover:underline">/import</Link>.
+      <h2 className="text-xl font-bold mb-1">Step 1 — Movimenti bancari del periodo</h2>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        Una tile per ogni conto. Verifico che per <strong>{periodo.label}</strong> ci sia tutto.
+        Verde = ok, giallo = possibile gap di {GAP_WARN_DAYS}+ giorni senza movimenti, rosso = mancano i dati.
       </p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <TileImport
-          title="Fatture emesse"
-          count={stats?.fatture.emesse ?? 0}
-          color="emerald"
-          desc="Attive — clienti / ricavi"
-        />
-        <TileImport
-          title="Fatture ricevute"
-          count={stats?.fatture.ricevute ?? 0}
-          color="orange"
-          desc="Passive — fornitori / costi"
-        />
+
+      {/* Banner riassuntivo */}
+      {(nEmpty > 0 || nPartial > 0) && (
+        <div className={`mb-4 px-4 py-2 rounded text-sm border ${
+          nEmpty > 0
+            ? 'bg-red-50 dark:bg-red-950 border-red-300 text-red-900 dark:text-red-100'
+            : 'bg-amber-50 dark:bg-amber-950 border-amber-300 text-amber-900 dark:text-amber-100'
+        }`}>
+          {nEmpty > 0 && <><strong>{nEmpty} conti senza movimenti</strong>{' '}</>}
+          {nPartial > 0 && <><strong>{nPartial} con possibili gap</strong></>}
+          {' — '}controlla di aver caricato tutto prima di procedere.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+        {conti.map(c => (
+          <ContoTile key={c.conto} c={c} periodo={periodo} />
+        ))}
+        {conti.length === 0 && (
+          <p className="text-sm text-gray-500 col-span-full text-center py-4">
+            Carico…
+          </p>
+        )}
       </div>
-      <div className="flex justify-between">
-        <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>
-        <button onClick={onNext} className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium inline-flex items-center gap-1">
+
+      <div className="flex justify-between items-center">
+        <Link href="/import" className="text-sm text-indigo-600 hover:underline">
+          Apri /import →
+        </Link>
+        <button
+          onClick={onNext}
+          className={`px-4 py-2 rounded text-white text-sm font-medium inline-flex items-center gap-1 ${
+            nEmpty > 0
+              ? 'bg-amber-600 hover:bg-amber-700'
+              : 'bg-indigo-600 hover:bg-indigo-700'
+          }`}
+        >
+          {nEmpty > 0 && <AlertTriangle className="h-4 w-4" />}
           Avanti <ChevronRight className="h-4 w-4" />
         </button>
       </div>
+    </div>
+  )
+}
+
+function ContoTile({ c, periodo }: { c: ContoDettaglio; periodo: ReturnType<typeof parsePeriodo> }) {
+  const status = getTileStatus(c)
+  const styles = {
+    empty: 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950',
+    partial: 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950',
+    ok: 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950',
+    'no-parser': 'border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900',
+  }[status]
+  const badge = {
+    empty: { label: 'MANCA', cls: 'bg-red-200 text-red-900 dark:bg-red-800 dark:text-red-100' },
+    partial: { label: 'GAP', cls: 'bg-amber-200 text-amber-900 dark:bg-amber-800 dark:text-amber-100' },
+    ok: { label: '✓ OK', cls: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-800 dark:text-emerald-100' },
+    'no-parser': { label: '—', cls: 'bg-gray-200 text-gray-900 dark:bg-gray-700 dark:text-gray-100' },
+  }[status]
+
+  // Per PayPal il parser esiste → link diretto a /import?type=paypal
+  // Per gli altri non c'è il parser → link generico a /import con nota
+  const importLink = c.conto === 'paypal' ? '/import?type=paypal' : '/import'
+
+  return (
+    <div className={`border-2 rounded-lg p-4 ${styles}`}>
+      <div className="flex items-start justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Banknote className="h-5 w-5 opacity-70" />
+          <h3 className="font-bold text-base">{c.label}</h3>
+        </div>
+        <span className={`text-[10px] font-bold uppercase rounded px-2 py-0.5 ${badge.cls}`}>
+          {badge.label}
+        </span>
+      </div>
+      <p className="text-2xl font-bold mt-1">
+        {c.count}
+        <span className="text-xs font-normal opacity-70 ml-1">movimenti</span>
+      </p>
+      {c.count > 0 && (
+        <>
+          <p className="text-[11px] mt-2 opacity-80">
+            <span className="text-green-700 dark:text-green-400">↗ +{formatCurrency(c.entrate)}</span>{' '}
+            <span className="text-red-700 dark:text-red-400">↘ −{formatCurrency(c.uscite)}</span>
+          </p>
+          <p className="text-[11px] mt-1 opacity-80">
+            Dal {c.firstDate ? new Date(c.firstDate).toLocaleDateString('it-IT') : '—'}
+            {' al '}
+            {c.lastDate ? new Date(c.lastDate).toLocaleDateString('it-IT') : '—'}
+          </p>
+          {c.maxGapDays > GAP_WARN_DAYS && (
+            <p className="text-[11px] mt-1 text-amber-700 dark:text-amber-300 font-semibold">
+              ⚠ Gap massimo {c.maxGapDays} giorni
+            </p>
+          )}
+        </>
+      )}
+      {c.count === 0 && (
+        <p className="text-xs mt-2 italic opacity-80">
+          Nessun movimento per {periodo.label}.
+          {c.hasParser
+            ? ' Vai a /import per caricare il CSV.'
+            : ' Parser non disponibile — caricali come fai di solito, poi torna qui.'}
+        </p>
+      )}
+      <Link
+        href={importLink}
+        className="mt-3 inline-flex items-center gap-1 text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+      >
+        Apri /import →
+      </Link>
+    </div>
+  )
+}
+
+function StepFattureIT({
+  periodo, stats, onNext, onBack,
+}: { periodo: ReturnType<typeof parsePeriodo>; stats: WizardStats | null; onNext: () => void; onBack: () => void }) {
+  const emesseCount = stats?.fatture.emesse ?? 0
+  const ricevuteCount = stats?.fatture.ricevute ?? 0
+  const emesseGap = stats?.fatture.emesseMaxGap ?? 0
+  const ricevuteGap = stats?.fatture.ricevuteMaxGap ?? 0
+
+  const emesseStatus = emesseCount === 0 ? 'empty' : emesseGap > GAP_WARN_DAYS * 2 ? 'partial' : 'ok'
+  const ricevuteStatus = ricevuteCount === 0 ? 'empty' : ricevuteGap > GAP_WARN_DAYS * 2 ? 'partial' : 'ok'
+  const nEmpty = (emesseCount === 0 ? 1 : 0) + (ricevuteCount === 0 ? 1 : 0)
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold mb-1">Step 2 — Fatture italiane SDI</h2>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        Verifico che per <strong>{periodo.label}</strong> ci siano sia le fatture emesse (clienti) sia le ricevute (fornitori).
+      </p>
+
+      {nEmpty > 0 && (
+        <div className="mb-4 px-4 py-2 rounded text-sm border bg-red-50 dark:bg-red-950 border-red-300 text-red-900 dark:text-red-100">
+          <strong>{nEmpty} tipi di fattura mancano</strong> per il periodo. Scarica il CSV dal SDI e caricalo via /import.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <FatturaTile
+          title="Fatture emesse"
+          subtitle="Attive — clienti / ricavi"
+          count={emesseCount}
+          totale={stats?.fatture.emesseTotale}
+          firstDate={stats?.fatture.emesseFirstDate}
+          lastDate={stats?.fatture.emesseLastDate}
+          maxGap={emesseGap}
+          status={emesseStatus}
+          importLink="/import?type=fatture_emesse"
+          periodo={periodo}
+        />
+        <FatturaTile
+          title="Fatture ricevute"
+          subtitle="Passive — fornitori / costi"
+          count={ricevuteCount}
+          totale={stats?.fatture.ricevuteTotale}
+          firstDate={stats?.fatture.ricevuteFirstDate}
+          lastDate={stats?.fatture.ricevuteLastDate}
+          maxGap={ricevuteGap}
+          status={ricevuteStatus}
+          importLink="/import?type=fatture_ricevute"
+          periodo={periodo}
+        />
+      </div>
+
+      <div className="flex justify-between">
+        <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>
+        <button
+          onClick={onNext}
+          className={`px-4 py-2 rounded text-white text-sm font-medium inline-flex items-center gap-1 ${
+            nEmpty > 0 ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
+          }`}
+        >
+          {nEmpty > 0 && <AlertTriangle className="h-4 w-4" />}
+          Avanti <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function FatturaTile({
+  title, subtitle, count, totale, firstDate, lastDate, maxGap, status, importLink, periodo,
+}: {
+  title: string
+  subtitle: string
+  count: number
+  totale?: number
+  firstDate?: string | null
+  lastDate?: string | null
+  maxGap?: number
+  status: 'empty' | 'partial' | 'ok'
+  importLink: string
+  periodo: ReturnType<typeof parsePeriodo>
+}) {
+  const styles = {
+    empty: 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950',
+    partial: 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950',
+    ok: 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950',
+  }[status]
+  const badge = {
+    empty: { label: 'MANCA', cls: 'bg-red-200 text-red-900 dark:bg-red-800 dark:text-red-100' },
+    partial: { label: 'GAP', cls: 'bg-amber-200 text-amber-900 dark:bg-amber-800 dark:text-amber-100' },
+    ok: { label: '✓ OK', cls: 'bg-emerald-200 text-emerald-900 dark:bg-emerald-800 dark:text-emerald-100' },
+  }[status]
+
+  return (
+    <div className={`border-2 rounded-lg p-4 ${styles}`}>
+      <div className="flex items-start justify-between mb-2">
+        <div>
+          <h3 className="font-bold text-base">{title}</h3>
+          <p className="text-xs opacity-70">{subtitle}</p>
+        </div>
+        <span className={`text-[10px] font-bold uppercase rounded px-2 py-0.5 ${badge.cls}`}>
+          {badge.label}
+        </span>
+      </div>
+      <p className="text-2xl font-bold mt-1">
+        {count}
+        <span className="text-xs font-normal opacity-70 ml-1">fatture</span>
+      </p>
+      {count > 0 && (
+        <>
+          {typeof totale === 'number' && (
+            <p className="text-[11px] mt-2 opacity-80">
+              Totale {formatCurrency(totale)}
+            </p>
+          )}
+          <p className="text-[11px] mt-1 opacity-80">
+            Dal {firstDate ? new Date(firstDate).toLocaleDateString('it-IT') : '—'}
+            {' al '}
+            {lastDate ? new Date(lastDate).toLocaleDateString('it-IT') : '—'}
+          </p>
+          {typeof maxGap === 'number' && maxGap > GAP_WARN_DAYS * 2 && (
+            <p className="text-[11px] mt-1 text-amber-700 dark:text-amber-300 font-semibold">
+              ⚠ Gap massimo {maxGap} giorni
+            </p>
+          )}
+        </>
+      )}
+      {count === 0 && (
+        <p className="text-xs mt-2 italic opacity-80">
+          Nessuna per {periodo.label}. Scarica il CSV dal SDI e caricalo.
+        </p>
+      )}
+      <Link
+        href={importLink}
+        className="mt-3 inline-flex items-center gap-1 text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+      >
+        Apri /import →
+      </Link>
     </div>
   )
 }

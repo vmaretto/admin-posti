@@ -1,12 +1,23 @@
 'use client'
 
-import { useState } from 'react'
+export const dynamic = 'force-dynamic'
+
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Upload, FileText, CheckCircle, AlertCircle, Trash2 } from 'lucide-react'
 
 type ImportType = 'fatture_emesse' | 'fatture_ricevute' | 'paypal'
 
-export default function ImportPage() {
-  const [selectedType, setSelectedType] = useState<ImportType>('fatture_emesse')
+function ImportPageInner() {
+  const searchParams = useSearchParams()
+  const typeParam = searchParams.get('type') as ImportType | null
+  const [selectedType, setSelectedType] = useState<ImportType>(typeParam || 'fatture_emesse')
+  // Sincronizza quando cambia ?type=
+  useEffect(() => {
+    if (typeParam && (typeParam === 'fatture_emesse' || typeParam === 'fatture_ricevute' || typeParam === 'paypal')) {
+      setSelectedType(typeParam)
+    }
+  }, [typeParam])
   const [file, setFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string; count?: number } | null>(null)
@@ -238,5 +249,13 @@ export default function ImportPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function ImportPage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-500">Caricamento…</div>}>
+      <ImportPageInner />
+    </Suspense>
   )
 }

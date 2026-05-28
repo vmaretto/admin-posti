@@ -1,7 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+export const dynamic = 'force-dynamic'
+
+import { useEffect, useState, useMemo, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Download, FileSpreadsheet, AlertCircle } from 'lucide-react'
+import { parsePeriodo, defaultPeriodoSlug } from '@/lib/periodo'
 
 interface FatturaEstera {
   id: string
@@ -24,12 +28,22 @@ function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('it-IT')
 }
 
-export default function FattureEsterePage() {
+function FattureEstereInner() {
+  const searchParams = useSearchParams()
+  const periodo = useMemo(
+    () => parsePeriodo(searchParams.get('periodo') || defaultPeriodoSlug()),
+    [searchParams],
+  )
   const [fatture, setFatture] = useState<FatturaEstera[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/fatture-estere')
+    setLoading(true)
+    let url = '/api/fatture-estere'
+    if (periodo.from && periodo.to) {
+      url += `?from=${periodo.from}&to=${periodo.to}`
+    }
+    fetch(url)
       .then(res => res.json())
       .then(data => {
         setFatture(data)
@@ -39,7 +53,7 @@ export default function FattureEsterePage() {
         console.error(err)
         setLoading(false)
       })
-  }, [])
+  }, [periodo.from, periodo.to])
 
   const exportToExcel = () => {
     // Create CSV content
@@ -159,5 +173,13 @@ export default function FattureEsterePage() {
         Totale: {fatture.length} fatture estere
       </div>
     </div>
+  )
+}
+
+export default function FattureEsterePage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-500">Caricamento…</div>}>
+      <FattureEstereInner />
+    </Suspense>
   )
 }

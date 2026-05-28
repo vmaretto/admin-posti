@@ -1,7 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+export const dynamic = 'force-dynamic'
+
+import { useEffect, useState, useMemo, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { FileText, CreditCard, AlertCircle, HelpCircle, TrendingUp, Euro } from 'lucide-react'
+import { parsePeriodo, defaultPeriodoSlug } from '@/lib/periodo'
 
 interface DashboardStats {
   fatture: {
@@ -105,12 +109,22 @@ function StatCard({
   )
 }
 
-export default function Dashboard() {
+function DashboardInner() {
+  const searchParams = useSearchParams()
+  const periodo = useMemo(
+    () => parsePeriodo(searchParams.get('periodo') || defaultPeriodoSlug()),
+    [searchParams],
+  )
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/dashboard')
+    setLoading(true)
+    let url = '/api/dashboard'
+    if (periodo.from && periodo.to) {
+      url += `?from=${periodo.from}&to=${periodo.to}`
+    }
+    fetch(url)
       .then(res => res.json())
       .then(data => {
         setStats(data)
@@ -120,7 +134,7 @@ export default function Dashboard() {
         console.error(err)
         setLoading(false)
       })
-  }, [])
+  }, [periodo.from, periodo.to])
 
   if (loading) {
     return (
@@ -331,5 +345,13 @@ export default function Dashboard() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function Dashboard() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-500">Caricamento…</div>}>
+      <DashboardInner />
+    </Suspense>
   )
 }

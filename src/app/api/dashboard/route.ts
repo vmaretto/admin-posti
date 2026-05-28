@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
@@ -30,15 +30,20 @@ function namesMatch(name1: string | null | undefined, name2: string | null | und
   return false
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = createServerClient()
-  
+  const { searchParams } = new URL(request.url)
+  const from = searchParams.get('from')
+  const to = searchParams.get('to')
+
   // ========== FATTURE ==========
-  // Tutte le fatture
-  const { data: allFatture } = await supabase
+  // Tutte le fatture (filtrate per periodo se richiesto)
+  let qF = supabase
     .from('fatture')
     .select('id, tipo, totale, imponibile, imposta, data_emissione, stato_riconciliazione, denominazione_cliente, denominazione_fornitore')
-    .range(0, 9999)
+  if (from) qF = qF.gte('data_emissione', from)
+  if (to) qF = qF.lte('data_emissione', to)
+  const { data: allFatture } = await qF.range(0, 9999)
   
   const fattureTotali = allFatture?.length || 0
   const fattureRiconciliate = allFatture?.filter(f => f.stato_riconciliazione === 'riconciliata').length || 0
@@ -58,10 +63,12 @@ export async function GET() {
     }, 0) || 0
   
   // ========== TRANSAZIONI ==========
-  const { data: allTransazioni } = await supabase
+  let qT = supabase
     .from('transazioni')
     .select('id, tipo, importo, data, controparte, stato_riconciliazione')
-    .range(0, 9999)
+  if (from) qT = qT.gte('data', from)
+  if (to) qT = qT.lte('data', to)
+  const { data: allTransazioni } = await qT.range(0, 9999)
   
   const transazioniTotali = allTransazioni?.length || 0
   const transazioniRiconciliate = allTransazioni?.filter(t => t.stato_riconciliazione === 'riconciliata').length || 0

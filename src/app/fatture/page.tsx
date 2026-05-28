@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState, useRef, Suspense } from 'react'
+import { useEffect, useState, useRef, useMemo, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
+import { parsePeriodo, defaultPeriodoSlug } from '@/lib/periodo'
 import { X, Save, ExternalLink, ChevronDown, ChevronRight, Search, Users, FileText, Euro, CheckCircle } from 'lucide-react'
 
 interface TransazioneCollegata {
@@ -62,6 +63,10 @@ type SortDir = 'asc' | 'desc'
 function FattureContent() {
   const searchParams = useSearchParams()
   const highlightId = searchParams.get('id')
+  const periodo = useMemo(
+    () => parsePeriodo(searchParams.get('periodo') || defaultPeriodoSlug()),
+    [searchParams],
+  )
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   
   const [soggetti, setSoggetti] = useState<SoggettoGroup[]>([])
@@ -153,7 +158,12 @@ function FattureContent() {
     params.set('grouped', 'true')
     if (filtroTipo) params.set('tipo', filtroTipo)
     if (filtroStato) params.set('stato', filtroStato)
-    
+    // Filtro periodo globale (PeriodoPicker → ?periodo=…)
+    if (periodo.from && periodo.to) {
+      params.set('from', periodo.from)
+      params.set('to', periodo.to)
+    }
+
     fetch(`/api/fatture?${params}`)
       .then(res => res.json())
       .then(data => {
@@ -168,7 +178,8 @@ function FattureContent() {
 
   useEffect(() => {
     fetchFatture()
-  }, [filtroTipo, filtroStato])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtroTipo, filtroStato, periodo.from, periodo.to])
 
   const getStatoBadge = (stato: string) => {
     switch (stato) {

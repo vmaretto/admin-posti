@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { format } from 'date-fns'
 import { it } from 'date-fns/locale'
+import { parsePeriodo, defaultPeriodoSlug } from '@/lib/periodo'
 import { 
   ChevronDown, 
   ChevronUp, 
@@ -251,7 +252,11 @@ function ControparteCard({
 
 function TransazioniContent() {
   const searchParams = useSearchParams()
-  
+  const periodo = useMemo(
+    () => parsePeriodo(searchParams.get('periodo') || defaultPeriodoSlug()),
+    [searchParams],
+  )
+
   const [controparti, setControparti] = useState<Controparte[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
@@ -273,7 +278,12 @@ function TransazioniContent() {
     if (filtroConto) params.set('conto', filtroConto)
     if (filtroTipo) params.set('tipo', filtroTipo)
     if (filtroStato) params.set('stato', filtroStato)
-    
+    // Filtro periodo globale
+    if (periodo.from && periodo.to) {
+      params.set('from', periodo.from)
+      params.set('to', periodo.to)
+    }
+
     fetch(`/api/transazioni?${params}`)
       .then(res => res.json())
       .then(data => {
@@ -288,7 +298,8 @@ function TransazioniContent() {
 
   useEffect(() => {
     fetchData()
-  }, [filtroConto, filtroTipo, filtroStato])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtroConto, filtroTipo, filtroStato, periodo.from, periodo.to])
 
   // Toggle expand
   const toggleExpand = (id: string) => {

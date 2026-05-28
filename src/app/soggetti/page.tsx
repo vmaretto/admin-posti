@@ -1229,7 +1229,7 @@ export default function SoggettiPage() {
                     {/* Fatture */}
                     <div>
                       <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">Fatture</h4>
-                      <div className="space-y-1 max-h-80 overflow-y-auto">
+                      <div className="space-y-1">
                         {soggetto.fatture.length === 0 ? (
                           <p className="text-sm text-gray-400">Nessuna fattura</p>
                         ) : (
@@ -1319,7 +1319,7 @@ export default function SoggettiPage() {
                     {/* Transazioni */}
                     <div>
                       <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">Transazioni</h4>
-                      <div className="space-y-1 max-h-80 overflow-y-auto">
+                      <div className="space-y-1">
                         {soggetto.transazioni.length === 0 ? (
                           <p className="text-sm text-gray-400">Nessuna transazione</p>
                         ) : (

@@ -29,6 +29,28 @@ function similarity(a: string, b: string): number {
 const FUZZY_AUTO_THRESHOLD = 0.75   // ≥75% → assegna automaticamente (no approva)
 const FUZZY_SUGGEST_THRESHOLD = 0.5  // 50-75% → mostra suggerimento approvabile
 
+// Alias detection: i casi tipo "LA PECORA NERA EDITORE DI CARGIANI SIMON" vs
+// "La Pecora Nera Editore" cadono sotto il 75% di Levenshtein per via del
+// suffisso lungo. Qui rileviamo "lo stesso soggetto" se uno è contenuto
+// nell'altro (case-insensitive, normalizzato) con almeno 8 caratteri e 2 parole
+// significative, oppure se l'80% delle parole significative del più corto
+// appaiono nel più lungo.
+function isAliasName(a: string, b: string): boolean {
+  if (!a || !b) return false
+  const na = a.toLowerCase().trim()
+  const nb = b.toLowerCase().trim()
+  if (!na || !nb) return false
+  if (na === nb) return true
+  const shorter = na.length <= nb.length ? na : nb
+  const longer = na.length > nb.length ? na : nb
+  if (shorter.length < 8) return false
+  if (longer.includes(shorter)) return true
+  const words = shorter.split(/\s+/).filter(w => w.length >= 3)
+  if (words.length < 2) return false
+  const found = words.filter(w => longer.includes(w)).length
+  return found / words.length >= 0.8
+}
+
 export async function GET() {
   const supabase = createServerClient()
 
@@ -129,7 +151,18 @@ export async function GET() {
       if (nc && soggettiMap.has(nc)) key = nc
     }
 
-    // 3c) Fuzzy match: similarity tra controparte e displayName di un soggetto ≥ 75%
+    // 3c) Alias match: uno contenuto nell'altro (es. "LA PECORA NERA EDITORE DI
+    // CARGIANI SIMON" ⊃ "La Pecora Nera Editore"). Vince sul fuzzy quando vale.
+    if (!key && t.controparte && t.stato_riconciliazione !== 'non_trovata') {
+      for (const [sk, sdata] of soggettiMap.entries()) {
+        if (isAliasName(t.controparte, sdata.originalName)) {
+          key = sk
+          break
+        }
+      }
+    }
+
+    // 3d) Fuzzy match: similarity tra controparte e displayName di un soggetto ≥ 75%
     if (!key && t.controparte && t.stato_riconciliazione !== 'non_trovata') {
       let bestKey = ''
       let bestSim = 0

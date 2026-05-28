@@ -340,6 +340,12 @@ export default function SoggettiPage() {
   // Modal "Accorpa N soggetti selezionati"
   const [multiMergeModal, setMultiMergeModal] = useState<{ from: Soggetto[]; toDenom: string } | null>(null)
 
+  // Selezione multipla GRUPPI ORFANI (transazioni senza soggetto)
+  const [selectedOrfani, setSelectedOrfani] = useState<Set<string>>(new Set())
+
+  // Modal "Assegna N gruppi orfani al soggetto target"
+  const [multiAssignModal, setMultiAssignModal] = useState<{ groups: OrfanaGroup[]; toDenom: string } | null>(null)
+
   // Modal "Rinomina soggetto"
   const [renameModal, setRenameModal] = useState<{ soggetto: Soggetto; newName: string } | null>(null)
 
@@ -475,6 +481,75 @@ export default function SoggettiPage() {
     } catch (err: unknown) {
       showFeedback('err', err instanceof Error ? err.message : 'Errore')
     }
+  }
+
+  // ----- Selezione multipla gruppi orfani -----
+
+  function toggleSelectOrfana(key: string) {
+    setSelectedOrfani(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function selezionaTuttiOrfaniVisibili() {
+    setSelectedOrfani(new Set(filteredOrfaneGroups.map(g => g.key)))
+  }
+
+  function deselezionaOrfani() {
+    setSelectedOrfani(new Set())
+  }
+
+  function openMultiAssign() {
+    if (selectedOrfani.size === 0) return
+    const groups = filteredOrfaneGroups.filter(g => selectedOrfani.has(g.key))
+    if (groups.length === 0) return
+    setMultiAssignModal({ groups, toDenom: '' })
+  }
+
+  async function submitMultiAssign() {
+    if (!multiAssignModal) return
+    const target = multiAssignModal.toDenom.trim()
+    if (!target) {
+      showFeedback('err', 'Indica il soggetto destinazione')
+      return
+    }
+    try {
+      const transIds = multiAssignModal.groups.flatMap(g => g.transazioni.map(t => t.id))
+      // createNew: true se il target non è già un soggetto esistente (autocompletamento miss)
+      const isExisting = soggettiDenoms.some(d => d.toLowerCase().trim() === target.toLowerCase().trim())
+      const res = await fetch('/api/transazioni/assign-soggetto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transazione_ids: transIds, soggetto: target, createNew: !isExisting }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback(
+        'ok',
+        `${transIds.length} transazioni di ${multiAssignModal.groups.length} gruppi assegnate a "${target}"`,
+      )
+      setMultiAssignModal(null)
+      setSelectedOrfani(new Set())
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore')
+    }
+  }
+
+  function openIgnoraOrfaniSelezionati() {
+    if (selectedOrfani.size === 0) return
+    const groups = filteredOrfaneGroups.filter(g => selectedOrfani.has(g.key))
+    if (groups.length === 0) return
+    const transIds = groups.flatMap(g => g.transazioni.map(t => t.id))
+    // Riuso il kind 'multi-righe' che già gestisce ignora batch di trans/fatture
+    setIgnoraModal({
+      target: { kind: 'multi-righe', fattureIds: [], transIds },
+      motivo: '',
+      custom: '',
+    })
   }
 
   async function ripristinaFattura(id: string) {
@@ -804,6 +879,7 @@ export default function SoggettiPage() {
         showFeedback('ok', `Tralasciate ${fattureIds.length} fatture e ${transIds.length} transazioni (${motivoFinal})`)
         setIgnoraModal(null)
         deselezionaTutteRighe()
+        setSelectedOrfani(new Set()) // ramo riusato anche dall'azione bulk sui gruppi orfani
         await load()
         return
       }
@@ -1357,6 +1433,48 @@ export default function SoggettiPage() {
         <strong>Suggerimento:</strong> trascina una fattura su una transazione (o viceversa) all&apos;interno dello stesso soggetto per crearne il match. Le transazioni senza soggetto vanno prima assegnate dalla sezione qui sotto.
       </div>
 
+      {/* Selection toolbar — gruppi orfani */}
+      {selectedOrfani.size > 0 && (() => {
+        const groups = filteredOrfaneGroups.filter(g => selectedOrfani.has(g.key))
+        const totTrans = groups.reduce((s, g) => s + g.transazioni.length, 0)
+        const totImp = groups.reduce((s, g) => s + g.totale, 0)
+        return (
+          <div className="sticky top-2 z-40 mb-4 bg-amber-600 text-white rounded-md shadow-lg px-4 py-2 flex items-center justify-between gap-4 flex-wrap">
+            <span className="font-medium text-sm">
+              {groups.length} {groups.length === 1 ? 'gruppo orfano selezionato' : 'gruppi orfani selezionati'} · {totTrans} transazioni · {formatCurrency(totImp)}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={selezionaTuttiOrfaniVisibili}
+                className="px-3 py-1 bg-amber-500 hover:bg-amber-400 rounded text-xs font-medium"
+              >
+                Seleziona tutti i visibili
+              </button>
+              <button
+                onClick={deselezionaOrfani}
+                className="px-3 py-1 bg-amber-500 hover:bg-amber-400 rounded text-xs font-medium"
+              >
+                Deseleziona
+              </button>
+              <button
+                onClick={openMultiAssign}
+                className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-white rounded text-xs font-medium"
+                title="Assegna tutte le transazioni dei gruppi selezionati a un unico soggetto"
+              >
+                <GitMerge className="h-3 w-3" /> Accorpa in soggetto…
+              </button>
+              <button
+                onClick={openIgnoraOrfaniSelezionati}
+                className="inline-flex items-center gap-1 px-3 py-1 bg-red-500 hover:bg-red-400 text-white rounded text-xs font-medium"
+                title="Tralascia tutte le transazioni dei gruppi selezionati"
+              >
+                <Trash2 className="h-3 w-3" /> Tralascia selezionati…
+              </button>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Orphan groups */}
       {filteredOrfaneGroups.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow mb-6 border-l-4 border-amber-500">
@@ -1382,10 +1500,18 @@ export default function SoggettiPage() {
               {filteredOrfaneGroups.map(group => {
                 const isOpen = expandedGroups.has(group.key)
                 const newInput = newSoggettoInput[group.key] || ''
+                const isSelected = selectedOrfani.has(group.key)
                 return (
-                  <div key={group.key} className="px-4 py-3">
+                  <div key={group.key} className={`px-4 py-3 ${isSelected ? 'bg-amber-50 dark:bg-amber-950/30 ring-2 ring-amber-400 ring-inset' : ''}`}>
                     {/* Group header */}
                     <div className="flex items-start gap-3 flex-wrap">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectOrfana(group.key)}
+                        className="mt-1.5 h-4 w-4 rounded border-gray-300 text-amber-600 flex-shrink-0"
+                        title="Seleziona per accorpare/tralasciare in batch"
+                      />
                       <button
                         onClick={() => toggleGroupExpand(group.key)}
                         className="mt-1 text-gray-400 hover:text-gray-600"
@@ -2130,6 +2256,81 @@ export default function SoggettiPage() {
                   className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
                 >
                   <GitMerge className="h-4 w-4" /> Accorpa {multiMergeModal.from.length} soggetti
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Modal: assegna N gruppi orfani a un soggetto target */}
+      {multiAssignModal && (() => {
+        const totTrans = multiAssignModal.groups.reduce((s, g) => s + g.transazioni.length, 0)
+        const totImp = multiAssignModal.groups.reduce((s, g) => s + g.totale, 0)
+        const target = multiAssignModal.toDenom.trim()
+        const isExisting = target ? soggettiDenoms.some(d => d.toLowerCase().trim() === target.toLowerCase().trim()) : false
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setMultiAssignModal(null)}
+          >
+            <div
+              className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+                Accorpa {multiAssignModal.groups.length} gruppi orfani in un soggetto
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                Tutte le transazioni dei gruppi selezionati verranno assegnate al soggetto target.
+                Diventano poi candidati per il match con le sue fatture.
+              </p>
+              <div className="bg-gray-50 dark:bg-gray-900 rounded p-3 mb-4 max-h-40 overflow-y-auto text-xs">
+                <p className="font-semibold text-gray-700 dark:text-gray-200 mb-1">Gruppi sorgente ({multiAssignModal.groups.length}):</p>
+                <ul className="space-y-0.5 text-gray-700 dark:text-gray-300">
+                  {multiAssignModal.groups.map(g => (
+                    <li key={g.key} className="flex justify-between gap-2">
+                      <span className="truncate">• {g.label}</span>
+                      <span className="text-gray-500 whitespace-nowrap">{g.transazioni.length}t · {formatCurrency(g.totale)}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 font-medium text-gray-700 dark:text-gray-200">
+                  Totale da assegnare: {totTrans} transazioni · {formatCurrency(totImp)}
+                </p>
+              </div>
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-200 block mb-1">
+                Soggetto target <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                list="multi-assign-target-list"
+                value={multiAssignModal.toDenom}
+                onChange={(e) => setMultiAssignModal(prev => prev ? { ...prev, toDenom: e.target.value } : null)}
+                placeholder="Nome del soggetto (esistente o nuovo)"
+                className="w-full border rounded-md px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+              />
+              <datalist id="multi-assign-target-list">
+                {soggettiDenoms.map(d => <option key={d} value={d} />)}
+              </datalist>
+              {target && (
+                <p className={`text-[11px] mt-1 ${isExisting ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {isExisting ? '✓ Soggetto esistente' : 'ⓘ Soggetto nuovo — verrà creato'}
+                </p>
+              )}
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  onClick={() => setMultiAssignModal(null)}
+                  className="px-4 py-2 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium"
+                >
+                  Annulla
+                </button>
+                <button
+                  onClick={submitMultiAssign}
+                  disabled={!target}
+                  className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium"
+                >
+                  <GitMerge className="h-4 w-4" /> Accorpa in {target ? `"${target}"` : 'soggetto'}
                 </button>
               </div>
             </div>

@@ -890,6 +890,10 @@ export default function SoggettiPage() {
     )
   }, [orfaneGroups, search])
 
+  // Definito dopo (vedi useMemo). L'effect che apre la sezione tralasciati
+  // automaticamente quando la ricerca matcha lì è messo subito dopo la
+  // dichiarazione di filteredTralasciati.
+
   const filteredTralasciati = useMemo(() => {
     if (!search) return tralasciati
     const q = search.toLowerCase()
@@ -908,6 +912,14 @@ export default function SoggettiPage() {
       ),
     }
   }, [tralasciati, search])
+
+  // Quando l'utente cerca e i match sono nei tralasciati, apri la sezione
+  // automaticamente così non deve scrollare al buio.
+  useEffect(() => {
+    if (search && (filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length) > 0) {
+      setTralasciatiOpen(true)
+    }
+  }, [search, filteredTralasciati.fatture.length, filteredTralasciati.transazioni.length])
 
   const orfaneTotal = useMemo(
     () => filteredOrfaneGroups.reduce((s, g) => s + g.totale, 0),
@@ -1041,9 +1053,14 @@ export default function SoggettiPage() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Cerca soggetto..."
+          placeholder="Cerca soggetto, numero fattura, importo, controparte…"
           className="flex-1 border rounded-md px-4 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white min-w-[200px]"
         />
+        {search && (
+          <span className="text-xs text-gray-600 dark:text-gray-300 whitespace-nowrap">
+            Risultati per <strong>&quot;{search}&quot;</strong>: <strong>{filteredSoggetti.length}</strong> soggetti · <strong>{filteredOrfaneGroups.length}</strong> gruppi orfani · <strong>{filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length}</strong> tralasciate
+          </span>
+        )}
         <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"

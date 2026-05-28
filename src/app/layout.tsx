@@ -50,6 +50,9 @@ export default function RootLayout({
                 <Link href="/import" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">
                   Import
                 </Link>
+                <Link href="/wizard" className="hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium bg-indigo-500/30">
+                  Wizard
+                </Link>
               </div>
             </div>
           </div>

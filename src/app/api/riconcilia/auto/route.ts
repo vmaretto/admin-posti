@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
 import { normalizeSubject } from '@/lib/normalize'
 import type { Fattura, Transazione } from '@/lib/types'
@@ -88,8 +88,14 @@ async function fetchAllPaginated<T = unknown>(
 
 // -------- core logic --------
 
-// Trova tutti i match automatici
-async function findAutoMatches(supabase: ReturnType<typeof createServerClient>): Promise<MatchDetail[]> {
+// Trova tutti i match automatici, opzionalmente filtrando per periodo
+// (le trans devono cadere nel range; le fatture sono volutamente prese
+// senza filtro perché un pagamento può riferirsi a una fattura più vecchia,
+// e il range date-fattura↔data-trans di −30/+120gg è già una guardia naturale).
+async function findAutoMatches(
+  supabase: ReturnType<typeof createServerClient>,
+  range?: { from: string; to: string },
+): Promise<MatchDetail[]> {
   // Carica TUTTE le fatture da riconciliare (paginate per superare i 1000)
   const fatture: Fattura[] = await fetchAllPaginated<Fattura>(() =>
     supabase
@@ -100,14 +106,19 @@ async function findAutoMatches(supabase: ReturnType<typeof createServerClient>):
       .order('created_at', { ascending: true }),
   )
 
-  // Carica TUTTE le transazioni da riconciliare (paginate)
-  const transazioni: Transazione[] = await fetchAllPaginated<Transazione>(() =>
-    supabase
+  // Carica le transazioni da riconciliare. Se c'è un periodo, filtro sulle
+  // trans (è il "campo di azione" del wizard).
+  const transazioni: Transazione[] = await fetchAllPaginated<Transazione>(() => {
+    let q = supabase
       .from('transazioni')
       .select('*')
       .eq('stato_riconciliazione', 'da_riconciliare')
-      .order('created_at', { ascending: true }),
-  )
+      .order('created_at', { ascending: true })
+    if (range) {
+      q = q.gte('data', range.from).lte('data', range.to)
+    }
+    return q
+  })
 
   if (!fatture.length || !transazioni.length) {
     return []
@@ -226,11 +237,18 @@ async function findAutoMatches(supabase: ReturnType<typeof createServerClient>):
 
 // -------- HTTP handlers --------
 
+function parseRange(request: NextRequest) {
+  const { searchParams } = new URL(request.url)
+  const from = searchParams.get('from')
+  const to = searchParams.get('to')
+  return from && to ? { from, to } : undefined
+}
+
 // GET: Preview dei match automatici
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const supabase = createServerClient()
-    const matches = await findAutoMatches(supabase)
+    const matches = await findAutoMatches(supabase, parseRange(request))
 
     return NextResponse.json({
       matched: matches.length,
@@ -253,10 +271,10 @@ export async function GET() {
 }
 
 // POST: Esegue i match automatici
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
     const supabase = createServerClient()
-    const matches = await findAutoMatches(supabase)
+    const matches = await findAutoMatches(supabase, parseRange(request))
 
     if (!matches.length) {
       return NextResponse.json({ matched: 0, details: [] })

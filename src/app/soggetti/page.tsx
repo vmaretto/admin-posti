@@ -822,7 +822,13 @@ function SoggettiPageInner() {
   async function handleAutoMatch() {
     setAutoMatching(true)
     try {
-      const res = await fetch('/api/riconcilia/auto', { method: 'POST' })
+      // Se c'è un periodo attivo, lo passo all'auto-match così opera solo
+      // sul finestra temporale selezionata.
+      let url = '/api/riconcilia/auto'
+      if (periodo.from && periodo.to) {
+        url += `?from=${periodo.from}&to=${periodo.to}`
+      }
+      const res = await fetch(url, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
       showFeedback('ok', `Match automatici: ${data.matched || 0}`)

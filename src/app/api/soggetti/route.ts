@@ -440,14 +440,16 @@ export async function GET() {
       }
     })
     .filter(s => s.fatture.length > 0 || s.transazioni.length > 0)
-    // PRIORITÀ: prima i soggetti con transazioni scoperte (count DESC, poi importo DESC).
-    // I soggetti già a posto sul fronte transazioni finiscono in fondo.
+    // PRIORITÀ: prima i soggetti con transazioni scoperte. A parità di "scoperto",
+    // chi ha più SOLDI scoperti viene prima (1 trans da 2000€ è più urgente di
+    // 100 micro-trans da 5€). I soggetti già a posto sul fronte trans hanno
+    // transScoperteImporto = 0 e finiscono in fondo, ordinati per volume totale.
     .sort((a, b) => {
-      if (a.transScoperteCount !== b.transScoperteCount) {
-        return b.transScoperteCount - a.transScoperteCount
-      }
       if (a.transScoperteImporto !== b.transScoperteImporto) {
         return b.transScoperteImporto - a.transScoperteImporto
+      }
+      if (a.transScoperteCount !== b.transScoperteCount) {
+        return b.transScoperteCount - a.transScoperteCount
       }
       return (b.totaleFatture + b.totaleTransazioni) - (a.totaleFatture + a.totaleTransazioni)
     })

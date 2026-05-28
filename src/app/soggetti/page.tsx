@@ -71,6 +71,17 @@ interface Soggetto {
   totaleTransazioni: number
   noteCreditoCount?: number
   saldo: number
+  // Metriche di "scopertura" calcolate lato server (vedi /api/soggetti).
+  transScoperteCount?: number
+  transScoperteImporto?: number
+  fattureScoperteCount?: number
+  fattureScoperteImporto?: number
+}
+
+interface KpiData {
+  transScoperte: { count: number; importoEntrate: number; importoUscite: number; totale: number }
+  fattureScoperte: { count: number; importoAttive: number; importoPassive: number; totale: number }
+  riconciliate: { transCount: number; fattureCount: number; importoTrans: number; importoFatture: number }
 }
 
 interface FatturaTralasciata {
@@ -136,6 +147,7 @@ interface SoggettiResponse {
   orfaneGroups: OrfanaGroup[]
   tralasciati?: { fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }
   audit?: Audit
+  kpi?: KpiData
 }
 
 type DragSource =
@@ -268,6 +280,7 @@ export default function SoggettiPage() {
   const [orfaneGroups, setOrfaneGroups] = useState<OrfanaGroup[]>([])
   const [tralasciati, setTralasciati] = useState<{ fatture: FatturaTralasciata[]; transazioni: TransTralasciata[] }>({ fatture: [], transazioni: [] })
   const [audit, setAudit] = useState<Audit | null>(null)
+  const [kpi, setKpi] = useState<KpiData | null>(null)
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [tralasciatiOpen, setTralasciatiOpen] = useState(true)
   // Riga espansa per dettagli inline: key = "f:{id}" o "t:{id}"
@@ -286,6 +299,10 @@ export default function SoggettiPage() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [soloNonRiconciliati, setSoloNonRiconciliati] = useState(false)
+  // PRIORITÀ TRANS: di default mostro solo i soggetti che hanno transazioni
+  // scoperte (cioè cash flow non documentato). L'utente può disattivare per
+  // vedere tutto, incluse le fatture senza pagamento (poss. finanziamento socio).
+  const [soloConTransScoperte, setSoloConTransScoperte] = useState(true)
   const [highlightFattura, setHighlightFattura] = useState<string | null>(null)
   const [highlightTransazione, setHighlightTransazione] = useState<string | null>(null)
 
@@ -372,6 +389,7 @@ export default function SoggettiPage() {
       setOrfaneGroups(data.orfaneGroups || [])
       setTralasciati(data.tralasciati || { fatture: [], transazioni: [] })
       setAudit(data.audit || null)
+      setKpi(data.kpi || null)
     } catch (e) {
       console.error(e)
       showFeedback('err', 'Errore nel caricamento')
@@ -867,8 +885,15 @@ export default function SoggettiPage() {
         s.transazioni.some(t => t.stato === 'da_riconciliare')
       if (!hasDaRic) return false
     }
+    if (soloConTransScoperte) {
+      // PRIORITÀ TRANS: nascondi i soggetti che hanno tutte le transazioni
+      // riconciliate (o nessuna transazione). Le fatture scoperte da sole
+      // non bastano a tenere visibile un soggetto, perché potrebbero essere
+      // coperte da finanziamento socio.
+      if ((s.transScoperteCount ?? 0) === 0) return false
+    }
     return true
-  }), [soggetti, search, soloNonRiconciliati])
+  }), [soggetti, search, soloNonRiconciliati, soloConTransScoperte])
 
   const soggettiDenoms = useMemo(
     () => soggetti.map(s => s.denominazione).sort((a, b) => a.localeCompare(b)),
@@ -1029,6 +1054,100 @@ export default function SoggettiPage() {
         </div>
       )}
 
+      {/* KPI HERO: 3 card con priorità "transazioni scoperte" (rosso) per primo.
+          Le fatture scoperte sono giallo perché potrebbero essere coperte da
+          finanziamento socio / spese personali del socio. */}
+      {kpi && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          {/* ROSSO — transazioni scoperte: cash flow non documentato, vero problema */}
+          <div className="bg-red-50 dark:bg-red-950 border-2 border-red-300 dark:border-red-700 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-red-700 dark:text-red-300">
+                  Transazioni scoperte
+                </p>
+                <p className="text-3xl font-bold text-red-900 dark:text-red-100 mt-1 leading-none">
+                  {kpi.transScoperte.count}
+                </p>
+                <p className="text-xs text-red-800 dark:text-red-200 mt-2 font-medium">
+                  {formatCurrency(kpi.transScoperte.totale)}
+                </p>
+              </div>
+              <AlertTriangle className="h-7 w-7 text-red-600 dark:text-red-400 flex-shrink-0" />
+            </div>
+            <div className="mt-3 pt-3 border-t border-red-200 dark:border-red-800 flex justify-between text-xs">
+              <span className="text-green-700 dark:text-green-400 font-medium" title="Soldi entrati senza una fattura emessa">
+                ↗ Entrate {formatCurrency(kpi.transScoperte.importoEntrate)}
+              </span>
+              <span className="text-red-700 dark:text-red-400 font-medium" title="Soldi usciti senza una fattura ricevuta">
+                ↘ Uscite {formatCurrency(kpi.transScoperte.importoUscite)}
+              </span>
+            </div>
+            <p className="text-[10px] text-red-600 dark:text-red-400 mt-2 italic">
+              Cash flow non documentato — chiede una fattura
+            </p>
+          </div>
+
+          {/* GIALLO — fatture senza pagamento: informativo, possibile finanziamento socio */}
+          <div className="bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-700 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                  Fatture senza pagamento
+                </p>
+                <p className="text-3xl font-bold text-amber-900 dark:text-amber-100 mt-1 leading-none">
+                  {kpi.fattureScoperte.count}
+                </p>
+                <p className="text-xs text-amber-800 dark:text-amber-200 mt-2 font-medium">
+                  {formatCurrency(kpi.fattureScoperte.totale)}
+                </p>
+              </div>
+              <Receipt className="h-7 w-7 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+            </div>
+            <div className="mt-3 pt-3 border-t border-amber-200 dark:border-amber-800 flex justify-between text-xs">
+              <span className="text-emerald-700 dark:text-emerald-400 font-medium" title="Attive emesse non ancora incassate">
+                ↘ Att. {formatCurrency(kpi.fattureScoperte.importoAttive)}
+              </span>
+              <span className="text-orange-700 dark:text-orange-400 font-medium" title="Passive ricevute non ancora pagate dal conto aziendale">
+                ↗ Pas. {formatCurrency(kpi.fattureScoperte.importoPassive)}
+              </span>
+            </div>
+            <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-2 italic">
+              Le passive senza pagamento possono essere finanziamento socio
+            </p>
+          </div>
+
+          {/* VERDE — già riconciliate, info per contesto */}
+          <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                  Riconciliate
+                </p>
+                <p className="text-3xl font-bold text-emerald-900 dark:text-emerald-100 mt-1 leading-none">
+                  {kpi.riconciliate.transCount}
+                </p>
+                <p className="text-xs text-emerald-800 dark:text-emerald-200 mt-2 font-medium">
+                  trans · {kpi.riconciliate.fattureCount} fatture
+                </p>
+              </div>
+              <Check className="h-7 w-7 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+            </div>
+            <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800 flex justify-between text-xs">
+              <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                Σ trans {formatCurrency(kpi.riconciliate.importoTrans)}
+              </span>
+              <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                Σ fatt {formatCurrency(kpi.riconciliate.importoFatture)}
+              </span>
+            </div>
+            <p className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-2 italic">
+              Cash flow documentato e abbinato
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Audit conteggi: verifica che tutte le trans e fatture in DB siano contabilizzate */}
       {audit && (() => {
         const tOk = audit.transazioni.missing === 0
@@ -1136,6 +1255,15 @@ export default function SoggettiPage() {
             Risultati per <strong>&quot;{search}&quot;</strong>: <strong>{filteredSoggetti.length}</strong> soggetti · <strong>{filteredOrfaneGroups.length}</strong> gruppi orfani · <strong>{filteredTralasciati.fatture.length + filteredTralasciati.transazioni.length}</strong> tralasciate · <strong>{deepSearchResults.length}</strong> match esatti
           </span>
         )}
+        <label className="flex items-center gap-2 cursor-pointer" title="Nasconde i soggetti che hanno tutte le transazioni riconciliate. Le fatture senza pagamento da sole non bastano a tenere visibile un soggetto (potrebbero essere coperte da finanziamento socio).">
+          <input
+            type="checkbox"
+            checked={soloConTransScoperte}
+            onChange={(e) => setSoloConTransScoperte(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300 text-red-600"
+          />
+          <span className="text-sm font-semibold text-red-700 dark:text-red-300">Solo con trans scoperte</span>
+        </label>
         <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"
@@ -1360,7 +1488,19 @@ export default function SoggettiPage() {
                     ? <ChevronDown className="h-5 w-5 text-gray-400 flex-shrink-0" />
                     : <ChevronRight className="h-5 w-5 text-gray-400 flex-shrink-0" />}
                   <div className="min-w-0">
-                    <p className="font-semibold text-gray-900 dark:text-white truncate">{soggetto.denominazione}</p>
+                    <p className="font-semibold text-gray-900 dark:text-white truncate flex items-center gap-2 flex-wrap">
+                      {soggetto.denominazione}
+                      {/* BADGE PROMINENTE: trans scoperte (priorità #1) */}
+                      {(soggetto.transScoperteCount ?? 0) > 0 && (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide rounded bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200 border border-red-300 dark:border-red-700"
+                          title="Transazioni di questo soggetto che non hanno una fattura corrispondente"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          {soggetto.transScoperteCount} trans scoperte · {formatCurrency(soggetto.transScoperteImporto || 0)}
+                        </span>
+                      )}
+                    </p>
                     <p className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2 flex-wrap">
                       <span>{soggetto.fatture.length} fatture · {soggetto.transazioni.length} transazioni</span>
                       {soggetto.noteCreditoCount && soggetto.noteCreditoCount > 0 ? (
@@ -1368,13 +1508,21 @@ export default function SoggettiPage() {
                           <Receipt className="h-3 w-3" /> {soggetto.noteCreditoCount} NC
                         </span>
                       ) : null}
+                      {/* Counter grigio: fatture senza pagamento (priorità #2, info) */}
+                      {(soggetto.fattureScoperteCount ?? 0) > 0 && (
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                          title="Fatture di questo soggetto senza pagamento collegato (poss. finanziamento socio)"
+                        >
+                          <Receipt className="h-3 w-3" /> {soggetto.fattureScoperteCount} fatt. senza pagamento
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
                 <div className="text-right flex items-center gap-4">
                   {(() => {
-                    // Calcolo client-side: 4 valori con segno + Saldo Aperto.
-                    // Le NC riducono il loro tipo (attive emessa NC -> riduce attive).
+                    // 4 valori contestuali (Att./Pas./Entr./Usc.) per chi vuole il dettaglio.
                     let attive = 0, passive = 0
                     for (const f of soggetto.fatture) {
                       const sign = f.tipo_documento === 'nota_credito' ? -1 : 1
@@ -1388,12 +1536,14 @@ export default function SoggettiPage() {
                       if (t.tipo === 'entrata') entrate += v
                       else if (t.tipo === 'uscita') uscite += v
                     }
-                    // Saldo aperto: (cose che loro ci devono ancora) + (cose che abbiamo
-                    // pagato in eccesso rispetto al fatturato passivo).
-                    //   = (attive − entrate) + (uscite − passive)
-                    //   = (attive + uscite) − (passive + entrate)
-                    // Positivo → loro netto ci devono. Negativo → noi netto dobbiamo a loro.
-                    const saldoAperto = (attive + uscite) - (passive + entrate)
+                    // PRIORITÀ TRANS — sostituisco l'unico "Saldo Aperto" con due valori
+                    // espliciti, separati per gravità:
+                    //   1) Da coprire con fatture (ROSSO) = trans scoperte
+                    //      Questo è il vero gap: cash in/out non documentato.
+                    //   2) Eccedenza fatture (GRIGIO) = fatture senza pagamento
+                    //      Probabile finanziamento socio o pagamento personale.
+                    const daCoprire = soggetto.transScoperteImporto || 0
+                    const eccedenza = soggetto.fattureScoperteImporto || 0
                     return (
                       <div className="flex gap-5 items-start">
                         <div className="text-right min-w-[110px]">
@@ -1406,13 +1556,14 @@ export default function SoggettiPage() {
                           <p className="text-xs text-green-600 font-medium whitespace-nowrap">↗ Entr. +{formatCurrency(entrate).replace('€','').trim()} €</p>
                           <p className="text-xs text-red-600 font-medium whitespace-nowrap">↘ Usc. −{formatCurrency(uscite).replace('€','').trim()} €</p>
                         </div>
-                        <div className="text-right min-w-[110px]">
-                          <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">Saldo Aperto</p>
-                          <p className={`font-bold whitespace-nowrap ${saldoAperto >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {saldoAperto >= 0 ? '+' : ''}{formatCurrency(saldoAperto)}
+                        <div className="text-right min-w-[150px] border-l border-gray-200 dark:border-gray-700 pl-3">
+                          <p className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-300 font-semibold" title="Importo di transazioni senza una fattura corrispondente">Da coprire</p>
+                          <p className={`font-bold whitespace-nowrap text-base leading-tight ${daCoprire > 0 ? 'text-red-700 dark:text-red-300' : 'text-gray-400 dark:text-gray-500'}`}>
+                            {daCoprire > 0 ? formatCurrency(daCoprire) : '—'}
                           </p>
-                          <p className="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                            {saldoAperto > 0 ? 'a credito' : saldoAperto < 0 ? 'a debito' : 'in pari'}
+                          <p className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mt-1.5" title="Fatture senza un pagamento collegato — possibile finanziamento socio">Eccedenza fatt.</p>
+                          <p className={`text-xs whitespace-nowrap ${eccedenza > 0 ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'}`}>
+                            {eccedenza > 0 ? formatCurrency(eccedenza) : '—'}
                           </p>
                         </div>
                       </div>
@@ -1639,7 +1790,18 @@ export default function SoggettiPage() {
 
           {filteredSoggetti.length === 0 && (
             <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-              Nessun soggetto trovato
+              {soloConTransScoperte && soggetti.length > 0 ? (
+                <div className="space-y-2">
+                  <p className="text-emerald-700 dark:text-emerald-300 font-medium">
+                    ✓ Nessun soggetto con transazioni scoperte fra quelli visibili.
+                  </p>
+                  <p className="text-xs">
+                    Tutte le transazioni sono coperte. Disattiva &quot;Solo con trans scoperte&quot; per vedere anche i soggetti con sole fatture senza pagamento.
+                  </p>
+                </div>
+              ) : (
+                <span>Nessun soggetto trovato</span>
+              )}
             </div>
           )}
         </div>

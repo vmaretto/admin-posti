@@ -408,6 +408,18 @@ export async function GET() {
       }, 0)
       const totaleTransazioni = data.transazioni.reduce((sum, t) => sum + (t.importo || 0), 0)
       const noteCreditoCount = data.fatture.filter(f => f.tipo_documento === 'nota_credito').length
+
+      // Metriche di "scopertura" — priorità trans (vedi dashboard ridisegno).
+      // Trans scoperta = stato !== 'riconciliata' (le tralasciate sono già escluse sopra).
+      // Fattura scoperta = stato !== 'riconciliata'.
+      const transScoperte = data.transazioni.filter(t => t.stato !== 'riconciliata')
+      const fattureScoperte = data.fatture.filter(f => f.stato !== 'riconciliata')
+      const transScoperteImporto = transScoperte.reduce((s, t) => s + (t.importo || 0), 0)
+      const fattureScoperteImporto = fattureScoperte.reduce((s, f) => {
+        const sign = f.tipo_documento === 'nota_credito' ? -1 : 1
+        return s + sign * (f.totale || 0)
+      }, 0)
+
       return {
         key, // chiave normalizzata, identificatore unico
         denominazione: data.originalName,
@@ -417,10 +429,24 @@ export async function GET() {
         totaleTransazioni,
         noteCreditoCount,
         saldo: totaleFatture - totaleTransazioni,
+        transScoperteCount: transScoperte.length,
+        transScoperteImporto,
+        fattureScoperteCount: fattureScoperte.length,
+        fattureScoperteImporto,
       }
     })
     .filter(s => s.fatture.length > 0 || s.transazioni.length > 0)
-    .sort((a, b) => (b.totaleFatture + b.totaleTransazioni) - (a.totaleFatture + a.totaleTransazioni))
+    // PRIORITÀ: prima i soggetti con transazioni scoperte (count DESC, poi importo DESC).
+    // I soggetti già a posto sul fronte transazioni finiscono in fondo.
+    .sort((a, b) => {
+      if (a.transScoperteCount !== b.transScoperteCount) {
+        return b.transScoperteCount - a.transScoperteCount
+      }
+      if (a.transScoperteImporto !== b.transScoperteImporto) {
+        return b.transScoperteImporto - a.transScoperteImporto
+      }
+      return (b.totaleFatture + b.totaleTransazioni) - (a.totaleFatture + a.totaleTransazioni)
+    })
 
   // Lista TRALASCIATI: fatture e transazioni con stato_riconciliazione='non_trovata'
   // (estratti dalle note se presenti come '[Tralasciata: motivo]\n…')
@@ -513,10 +539,73 @@ export async function GET() {
   const missingFat: string[] = []
   for (const id of allFatIds) if (!accountedFat.has(id)) missingFat.push(id)
 
+  // KPI GLOBALI per il nuovo header della dashboard.
+  // Priorità: trans scoperte (vero problema cash), poi fatture scoperte (info,
+  // potrebbero essere coperte da finanziamento socio o pagamenti personali).
+  // Tralasciate escluse da TUTTI i conteggi.
+  const transValide = (transazioni || []).filter(t => t.stato_riconciliazione !== 'non_trovata')
+  const fattureValide = (fatture || []).filter(f => f.stato_riconciliazione !== 'non_trovata')
+
+  let transScoperteCount = 0
+  let transScoperteImpEntrate = 0
+  let transScoperteImpUscite = 0
+  let transRiconciliateCount = 0
+  let transRiconciliateImporto = 0
+  for (const t of transValide) {
+    if (t.stato_riconciliazione === 'riconciliata') {
+      transRiconciliateCount++
+      transRiconciliateImporto += Math.abs(t.importo || 0)
+    } else {
+      transScoperteCount++
+      if (t.tipo === 'entrata') transScoperteImpEntrate += Math.abs(t.importo || 0)
+      else transScoperteImpUscite += Math.abs(t.importo || 0)
+    }
+  }
+
+  let fattureScoperteCount = 0
+  let fattureScoperteImpAttive = 0   // emesse non riconciliate
+  let fattureScoperteImpPassive = 0  // ricevute non riconciliate
+  let fattureRiconciliateCount = 0
+  let fattureRiconciliateImporto = 0
+  for (const f of fattureValide) {
+    const sign = f.tipo_documento === 'nota_credito' ? -1 : 1
+    const importo = sign * (f.totale || 0)
+    if (f.stato_riconciliazione === 'riconciliata') {
+      fattureRiconciliateCount++
+      fattureRiconciliateImporto += Math.abs(importo)
+    } else {
+      fattureScoperteCount++
+      if (f.tipo === 'emessa') fattureScoperteImpAttive += importo
+      else fattureScoperteImpPassive += importo
+    }
+  }
+
+  const kpi = {
+    transScoperte: {
+      count: transScoperteCount,
+      importoEntrate: transScoperteImpEntrate,
+      importoUscite: transScoperteImpUscite,
+      totale: transScoperteImpEntrate + transScoperteImpUscite,
+    },
+    fattureScoperte: {
+      count: fattureScoperteCount,
+      importoAttive: fattureScoperteImpAttive,
+      importoPassive: fattureScoperteImpPassive,
+      totale: fattureScoperteImpAttive + fattureScoperteImpPassive,
+    },
+    riconciliate: {
+      transCount: transRiconciliateCount,
+      fattureCount: fattureRiconciliateCount,
+      importoTrans: transRiconciliateImporto,
+      importoFatture: fattureRiconciliateImporto,
+    },
+  }
+
   return NextResponse.json({
     soggetti,
     orfaneGroups,
     tralasciati: { fatture: fattureTralasciate, transazioni: transTralasciate },
+    kpi,
     audit: {
       transazioni: {
         totalInDb: dbTransCount ?? allTransIds.size,        // count reale dal DB (SELECT count)

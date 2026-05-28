@@ -13,20 +13,25 @@ export async function GET(request: NextRequest) {
   const stato = searchParams.get('stato')
   const from = searchParams.get('from')
   const to = searchParams.get('to')
+  const idsParam = searchParams.get('ids')
   const grouped = searchParams.get('grouped') === 'true'
-  
+
   // Query transazioni
   let query = supabase
     .from('transazioni')
     .select('*')
     .order('data', { ascending: false })
     .range(0, 9999)
-  
+
   if (conto) query = query.eq('conto', conto)
   if (tipo) query = query.eq('tipo', tipo)
   if (stato) query = query.eq('stato_riconciliazione', stato)
   if (from) query = query.gte('data', from)
   if (to) query = query.lte('data', to)
+  if (idsParam) {
+    const ids = idsParam.split(',').map(s => s.trim()).filter(Boolean)
+    if (ids.length > 0) query = query.in('id', ids)
+  }
   
   const { data: transazioni, error } = await query
   

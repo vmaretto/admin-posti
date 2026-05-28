@@ -437,27 +437,28 @@ function WizardInner() {
             />
           )}
 
-          {/* STEP 4 — Classificazione (placeholder per ora) */}
-          {stepCorrente === 4 && (
-            <StepGenericPlaceholder
-              n={4}
-              title="Classifica le trans scoperte"
-              desc="Per ogni transazione del periodo non ancora coperta da fattura scegli: è un fornitore estero (entra nella coda Step 5), oppure tralasciala con motivazione. Implementazione in arrivo."
-              stats={stats}
+          {/* STEP 4 — Classificazione */}
+          {stepCorrente === 4 && row && (
+            <StepClassificazione
+              periodo={periodo}
+              row={row}
+              onReloadRow={reloadRow}
+              onReloadStats={reloadStats}
               onNext={() => setStep(5)}
               onBack={() => setStep(3)}
+              showFeedback={showFeedback}
             />
           )}
 
-          {/* STEP 5 — Carica fatture estere (placeholder) */}
-          {stepCorrente === 5 && (
-            <StepGenericPlaceholder
-              n={5}
-              title="Carica le fatture estere mancanti"
-              desc="Per ogni trans marcata come estera allo Step 4, si apre un mini-form pre-compilato (data, importo, fornitore) per inserire la fattura. Implementazione in arrivo."
-              stats={stats}
+          {/* STEP 5 — Carica fatture estere */}
+          {stepCorrente === 5 && row && (
+            <StepFattureEstere
+              row={row}
+              onReloadRow={reloadRow}
+              onReloadStats={reloadStats}
               onNext={() => setStep(6)}
               onBack={() => setStep(4)}
+              showFeedback={showFeedback}
             />
           )}
 
@@ -586,6 +587,511 @@ function StepRiepilogo({
         >
           Vai a Soggetti del periodo →
         </Link>
+      </div>
+    </div>
+  )
+}
+
+const MOTIVI_PREDEFINITI = [
+  'Importo piccolo',
+  'Spesa sbagliata',
+  'Stipendi',
+  'Imposte e tasse',
+  'Commissioni bancarie',
+  'Spostamento tra conti',
+  'Movimento personale',
+]
+
+interface TransScoperta {
+  id: string
+  importo: number
+  tipo: string
+  data: string
+  conto: string
+  controparte: string | null
+  descrizione: string | null
+}
+
+function StepClassificazione({
+  periodo, row, onReloadRow, onReloadStats, onNext, onBack, showFeedback,
+}: {
+  periodo: ReturnType<typeof parsePeriodo>
+  row: PeriodoRow
+  onReloadRow: () => Promise<void>
+  onReloadStats: () => Promise<void>
+  onNext: () => void
+  onBack: () => void
+  showFeedback: (k: 'ok' | 'err', t: string) => void
+}) {
+  const [trans, setTrans] = useState<TransScoperta[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tralasciaModal, setTralasciaModal] = useState<{
+    ids: string[]
+    motivo: string
+    custom: string
+  } | null>(null)
+
+  const reloadTrans = useCallback(async () => {
+    if (!periodo.from || !periodo.to) return
+    setLoading(true)
+    try {
+      const url = `/api/transazioni?stato=da_riconciliare&from=${periodo.from}&to=${periodo.to}`
+      const res = await fetch(url)
+      const data = await res.json()
+      // /api/transazioni senza grouped ritorna un array piatto
+      const list: TransScoperta[] = Array.isArray(data) ? data : (data.transazioni || [])
+      // ordina per importo DESC
+      list.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
+      setTrans(list)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }, [periodo.from, periodo.to])
+
+  useEffect(() => { reloadTrans() }, [reloadTrans])
+
+  // ID già marcati come "estero" nella queue del periodo
+  const queueSet = useMemo(() => new Set(row.trans_estere_queue), [row.trans_estere_queue])
+
+  async function marcaEstero(tId: string) {
+    try {
+      const newQueue = Array.from(new Set([...row.trans_estere_queue, tId]))
+      const res = await fetch('/api/wizard/periodo', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id, trans_estere_queue: newQueue }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', 'Marcata come fornitore estero')
+      await onReloadRow()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  async function rimuoviEstero(tId: string) {
+    try {
+      const newQueue = row.trans_estere_queue.filter(x => x !== tId)
+      const res = await fetch('/api/wizard/periodo', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id, trans_estere_queue: newQueue }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      await onReloadRow()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  function apriTralasciaSingola(tId: string) {
+    setTralasciaModal({ ids: [tId], motivo: '', custom: '' })
+  }
+
+  async function submitTralascia() {
+    if (!tralasciaModal) return
+    const motivoFinal = tralasciaModal.motivo === 'Altro'
+      ? tralasciaModal.custom.trim()
+      : tralasciaModal.motivo
+    if (!motivoFinal) {
+      showFeedback('err', 'Seleziona o scrivi una motivazione')
+      return
+    }
+    try {
+      const res = await fetch('/api/transazioni/ignora', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transazione_ids: tralasciaModal.ids, motivo: motivoFinal }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `${tralasciaModal.ids.length} transazioni tralasciate`)
+      setTralasciaModal(null)
+      await reloadTrans()
+      await onReloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold mb-1">Step 4 — Classifica le trans scoperte</h2>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        Per ogni transazione del periodo {periodo.label} ancora senza fattura corrispondente, scegli:
+        <strong> Estero</strong> (entra in coda Step 5),
+        <strong> Tralascia</strong> (con motivazione),
+        oppure lasciala stare.
+      </p>
+
+      <div className="bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-700 rounded p-3 mb-4 text-xs text-amber-900 dark:text-amber-100">
+        <strong>{row.trans_estere_queue.length}</strong> trans già marcate come Estero (vai allo Step 5 per caricarle).
+      </div>
+
+      {loading ? (
+        <p className="text-center text-gray-500 py-8">Caricamento trans scoperte…</p>
+      ) : trans.length === 0 ? (
+        <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 rounded p-6 text-center text-emerald-900 dark:text-emerald-100">
+          ✓ Tutte le transazioni del periodo sono coperte o classificate. Passa allo Step 5 per caricare le fatture estere o salta direttamente al Riepilogo.
+        </div>
+      ) : (
+        <div className="space-y-1 mb-6 max-h-[500px] overflow-y-auto">
+          {trans.map(t => {
+            const isEstero = queueSet.has(t.id)
+            const importoAbs = Math.abs(t.importo)
+            return (
+              <div
+                key={t.id}
+                className={`flex items-center gap-3 px-3 py-2 rounded text-sm border ${
+                  isEstero
+                    ? 'bg-blue-50 dark:bg-blue-950 border-blue-300 dark:border-blue-700'
+                    : 'bg-gray-50 dark:bg-gray-900 border-transparent'
+                }`}
+              >
+                <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
+                  {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(importoAbs)}
+                </span>
+                <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
+                  {new Date(t.data).toLocaleDateString('it-IT')}
+                </span>
+                <span className="capitalize text-gray-700 dark:text-gray-300 text-xs">{t.conto}</span>
+                <span className="text-gray-800 dark:text-gray-200 truncate flex-1" title={t.controparte || t.descrizione || ''}>
+                  {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
+                </span>
+
+                {isEstero ? (
+                  <>
+                    <span className="px-2 py-0.5 text-[10px] uppercase rounded bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100 font-bold flex items-center gap-1">
+                      <Globe className="h-3 w-3" /> Estero
+                    </span>
+                    <button
+                      onClick={() => rimuoviEstero(t.id)}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      Annulla
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => marcaEstero(t.id)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-100 hover:bg-blue-200 dark:bg-blue-900 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200 font-medium"
+                    >
+                      <Globe className="h-3 w-3" /> Estero
+                    </button>
+                    <button
+                      onClick={() => apriTralasciaSingola(t.id)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-amber-100 hover:bg-amber-200 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-700 dark:text-amber-200 font-medium"
+                    >
+                      Tralascia
+                    </button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="flex justify-between">
+        <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>
+        <button onClick={onNext} className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium inline-flex items-center gap-1">
+          Avanti <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Modale Tralascia */}
+      {tralasciaModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setTralasciaModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold mb-1">Tralascia transazione</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Seleziona o scrivi una motivazione. La transazione resterà visibile in &ldquo;Tralasciati&rdquo;
+              con questa motivazione.
+            </p>
+            <select
+              value={tralasciaModal.motivo}
+              onChange={e => setTralasciaModal(prev => prev ? { ...prev, motivo: e.target.value } : null)}
+              className="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600 mb-2"
+            >
+              <option value="">Seleziona motivazione…</option>
+              {MOTIVI_PREDEFINITI.map(m => <option key={m} value={m}>{m}</option>)}
+              <option value="Altro">Altro (scrivi)</option>
+            </select>
+            {tralasciaModal.motivo === 'Altro' && (
+              <input
+                type="text"
+                value={tralasciaModal.custom}
+                onChange={e => setTralasciaModal(prev => prev ? { ...prev, custom: e.target.value } : null)}
+                placeholder="Scrivi la motivazione"
+                className="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600 mb-2"
+              />
+            )}
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setTralasciaModal(null)} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm">Annulla</button>
+              <button onClick={submitTralascia} className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium">Tralascia</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface FatturaEsteraForm {
+  numero: string
+  denominazione_fornitore: string
+  data_emissione: string
+  totale: number
+  valuta: string
+  importo_originale: number
+  piva_fornitore: string
+  note: string
+}
+
+function StepFattureEstere({
+  row, onReloadRow, onReloadStats, onNext, onBack, showFeedback,
+}: {
+  row: PeriodoRow
+  onReloadRow: () => Promise<void>
+  onReloadStats: () => Promise<void>
+  onNext: () => void
+  onBack: () => void
+  showFeedback: (k: 'ok' | 'err', t: string) => void
+}) {
+  const [trans, setTrans] = useState<TransScoperta[]>([])
+  const [loading, setLoading] = useState(true)
+  const [forms, setForms] = useState<Record<string, FatturaEsteraForm>>({})
+
+  const reloadQueueDetails = useCallback(async () => {
+    if (row.trans_estere_queue.length === 0) {
+      setTrans([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    try {
+      const ids = row.trans_estere_queue.join(',')
+      const res = await fetch(`/api/transazioni?ids=${ids}`)
+      const data = await res.json()
+      const list: TransScoperta[] = Array.isArray(data) ? data : []
+      list.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
+      setTrans(list)
+      // Pre-compila form per ogni trans
+      const newForms: Record<string, FatturaEsteraForm> = {}
+      for (const t of list) {
+        const importoAbs = Math.abs(t.importo)
+        newForms[t.id] = forms[t.id] || {
+          numero: '',
+          denominazione_fornitore: t.controparte || '',
+          data_emissione: t.data,
+          totale: importoAbs,
+          valuta: 'EUR',
+          importo_originale: importoAbs,
+          piva_fornitore: '',
+          note: `Importata via wizard. Trans collegata: ${t.id.slice(0, 8)}`,
+        }
+      }
+      setForms(newForms)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.trans_estere_queue.join(',')])
+
+  useEffect(() => { reloadQueueDetails() }, [reloadQueueDetails])
+
+  function updateForm(tId: string, field: keyof FatturaEsteraForm, value: string | number) {
+    setForms(prev => ({ ...prev, [tId]: { ...prev[tId], [field]: value } }))
+  }
+
+  async function createFattura(tId: string) {
+    const f = forms[tId]
+    if (!f) return
+    if (!f.numero.trim() || !f.denominazione_fornitore.trim() || !f.data_emissione || !f.totale) {
+      showFeedback('err', 'Compila numero, fornitore, data e totale')
+      return
+    }
+    try {
+      const res = await fetch('/api/wizard/crea-fattura-estera', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transazione_id: tId,
+          numero: f.numero,
+          denominazione_fornitore: f.denominazione_fornitore,
+          data_emissione: f.data_emissione,
+          totale: Number(f.totale),
+          valuta: f.valuta,
+          importo_originale: Number(f.importo_originale),
+          piva_fornitore: f.piva_fornitore || undefined,
+          note: f.note || undefined,
+          wizard_periodo_id: row.id,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', 'Fattura estera creata e collegata')
+      await onReloadRow()
+      await onReloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  async function rimuoviDallaCoda(tId: string) {
+    try {
+      const newQueue = row.trans_estere_queue.filter(x => x !== tId)
+      const res = await fetch('/api/wizard/periodo', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id, trans_estere_queue: newQueue }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      await onReloadRow()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold mb-1">Step 5 — Carica fatture estere</h2>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        Per ogni trans marcata Estero allo Step 4, compila i campi della fattura del fornitore e
+        clicca <strong>Crea fattura</strong>. La fattura viene creata e collegata alla trans (entrambe
+        passano in stato &ldquo;riconciliata&rdquo;).
+      </p>
+
+      {loading ? (
+        <p className="text-center text-gray-500 py-8">Caricamento coda…</p>
+      ) : trans.length === 0 ? (
+        <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 rounded p-6 text-center text-emerald-900 dark:text-emerald-100">
+          ✓ Coda vuota. Tutte le fatture estere sono state caricate (o nessuna trans è marcata Estero).
+        </div>
+      ) : (
+        <div className="space-y-4 mb-6 max-h-[600px] overflow-y-auto pr-2">
+          {trans.map(t => {
+            const f = forms[t.id] || {} as FatturaEsteraForm
+            const importoAbs = Math.abs(t.importo)
+            return (
+              <div key={t.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900">
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <div className="text-sm">
+                    <span className={`font-bold ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
+                      {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(importoAbs)}
+                    </span>
+                    <span className="text-gray-500 mx-2">·</span>
+                    <span className="text-gray-700 dark:text-gray-300">{new Date(t.data).toLocaleDateString('it-IT')}</span>
+                    <span className="text-gray-500 mx-2">·</span>
+                    <span className="capitalize text-gray-700 dark:text-gray-300">{t.conto}</span>
+                    <span className="text-gray-500 mx-2">·</span>
+                    <span className="text-gray-800 dark:text-gray-200">{t.controparte || '—'}</span>
+                  </div>
+                  <button
+                    onClick={() => rimuoviDallaCoda(t.id)}
+                    className="text-xs text-gray-500 hover:text-red-600"
+                  >
+                    Rimuovi dalla coda
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Numero fattura *</label>
+                    <input
+                      type="text"
+                      value={f.numero || ''}
+                      onChange={e => updateForm(t.id, 'numero', e.target.value)}
+                      placeholder="es. INV-001"
+                      className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Fornitore *</label>
+                    <input
+                      type="text"
+                      value={f.denominazione_fornitore || ''}
+                      onChange={e => updateForm(t.id, 'denominazione_fornitore', e.target.value)}
+                      className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Data emissione *</label>
+                    <input
+                      type="date"
+                      value={f.data_emissione || ''}
+                      onChange={e => updateForm(t.id, 'data_emissione', e.target.value)}
+                      className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Totale EUR *</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={f.totale || ''}
+                      onChange={e => updateForm(t.id, 'totale', parseFloat(e.target.value))}
+                      className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Valuta originale</label>
+                    <select
+                      value={f.valuta || 'EUR'}
+                      onChange={e => updateForm(t.id, 'valuta', e.target.value)}
+                      className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
+                    >
+                      <option value="EUR">EUR</option>
+                      <option value="USD">USD</option>
+                      <option value="GBP">GBP</option>
+                      <option value="CHF">CHF</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">P.IVA / VAT</label>
+                    <input
+                      type="text"
+                      value={f.piva_fornitore || ''}
+                      onChange={e => updateForm(t.id, 'piva_fornitore', e.target.value)}
+                      placeholder="opzionale"
+                      className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex justify-end">
+                  <button
+                    onClick={() => createFattura(t.id)}
+                    className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded"
+                  >
+                    <Check className="h-4 w-4" /> Crea fattura
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="flex justify-between">
+        <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>
+        <button onClick={onNext} className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium inline-flex items-center gap-1">
+          Avanti <ChevronRight className="h-4 w-4" />
+        </button>
       </div>
     </div>
   )

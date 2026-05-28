@@ -51,19 +51,71 @@ function isAliasName(a: string, b: string): boolean {
   return found / words.length >= 0.8
 }
 
+// Fetch paginato — Supabase ha un limite di 1000 righe per query a livello di
+// progetto. Se il DB ha più di 1000 record, una singola select li tronca silenziosamente.
+// Questa funzione itera in batch finché non c'è più niente da leggere.
+async function fetchAllPaginated<T>(
+  supabase: ReturnType<typeof createServerClient>,
+  table: string,
+  selectFields: string,
+  orderBy: string = 'created_at'
+): Promise<T[]> {
+  const PAGE = 1000
+  const all: T[] = []
+  let from = 0
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (let safetyCounter = 0; safetyCounter < 100; safetyCounter++) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(selectFields)
+      .order(orderBy, { ascending: true })
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`Errore fetch ${table}: ${error.message}`)
+    if (!data || data.length === 0) break
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    all.push(...(data as any[]))
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return all
+}
+
 export async function GET() {
   const supabase = createServerClient()
 
-  // Load fatture, transazioni, soggetti_cluster
-  const { data: fatture } = await supabase
-    .from('fatture')
-    .select('id, numero, tipo, tipo_documento, totale, imponibile, imposta, data_emissione, data_ricezione, stato_riconciliazione, denominazione_fornitore, piva_fornitore, denominazione_cliente, piva_cliente, transazione_id, fonte, note')
-    .range(0, 9999)
+  // Load TUTTE le fatture e transazioni con paginazione
+  const fatture = await fetchAllPaginated<{
+    id: string; numero: string; tipo: string; tipo_documento: string;
+    totale: number; imponibile: number; imposta: number;
+    data_emissione: string; data_ricezione: string | null;
+    stato_riconciliazione: string;
+    denominazione_fornitore: string | null; piva_fornitore: string | null;
+    denominazione_cliente: string | null; piva_cliente: string | null;
+    transazione_id: string | null; fonte: string | null; note: string | null;
+  }>(
+    supabase,
+    'fatture',
+    'id, numero, tipo, tipo_documento, totale, imponibile, imposta, data_emissione, data_ricezione, stato_riconciliazione, denominazione_fornitore, piva_fornitore, denominazione_cliente, piva_cliente, transazione_id, fonte, note'
+  )
 
-  const { data: transazioni } = await supabase
+  const transazioni = await fetchAllPaginated<{
+    id: string; importo: number; tipo: string; data: string;
+    conto: string; descrizione: string | null;
+    stato_riconciliazione: string; controparte: string | null;
+    fattura_id: string | null; riferimento: string | null; note: string | null;
+  }>(
+    supabase,
+    'transazioni',
+    'id, importo, tipo, data, conto, descrizione, stato_riconciliazione, controparte, fattura_id, riferimento, note'
+  )
+
+  // Conta reale dal DB (verifica che la paginazione non abbia perso nulla)
+  const { count: dbTransCount } = await supabase
     .from('transazioni')
-    .select('id, importo, tipo, data, conto, descrizione, stato_riconciliazione, controparte, fattura_id, riferimento, note')
-    .range(0, 9999)
+    .select('id', { count: 'exact', head: true })
+  const { count: dbFatCount } = await supabase
+    .from('fatture')
+    .select('id', { count: 'exact', head: true })
 
   const { data: clusterRows } = await supabase
     .from('soggetti_cluster')
@@ -467,20 +519,22 @@ export async function GET() {
     tralasciati: { fatture: fattureTralasciate, transazioni: transTralasciate },
     audit: {
       transazioni: {
-        totalInDb: allTransIds.size,
+        totalInDb: dbTransCount ?? allTransIds.size,        // count reale dal DB (SELECT count)
+        totalFetched: allTransIds.size,                     // quanto effettivamente fetchato
         inSoggetti: transInSoggetti.size,
         inOrfani: transInOrfani.size,
         inTralasciati: transInTralasciati.size,
         accounted: accountedTrans.size,
-        missing: missingTrans.length,
-        missingIds: missingTrans.slice(0, 50), // primi 50 per debug
+        missing: missingTrans.length + Math.max(0, (dbTransCount ?? 0) - allTransIds.size),
+        missingIds: missingTrans.slice(0, 50),
       },
       fatture: {
-        totalInDb: allFatIds.size,
+        totalInDb: dbFatCount ?? allFatIds.size,
+        totalFetched: allFatIds.size,
         inSoggetti: fattureInSoggetti.size,
         inTralasciati: fattureInTralasciati.size,
         accounted: accountedFat.size,
-        missing: missingFat.length,
+        missing: missingFat.length + Math.max(0, (dbFatCount ?? 0) - allFatIds.size),
         missingIds: missingFat.slice(0, 50),
       },
     },

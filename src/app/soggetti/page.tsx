@@ -118,6 +118,7 @@ interface OrfanaGroup {
 
 interface AuditSection {
   totalInDb: number
+  totalFetched?: number
   inSoggetti: number
   inOrfani?: number
   inTralasciati: number

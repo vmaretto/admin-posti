@@ -7,10 +7,10 @@ export const dynamic = 'force-dynamic'
 // Wise rimosso: ora le fonti sono configurabili dal frontend (Step 1).
 const FALLBACK_CONTI_ATTESI: { key: string; label: string; hasParser: boolean }[] = [
   { key: 'qonto', label: 'Qonto', hasParser: true },
-  { key: 'sella_conto', label: 'Sella conto', hasParser: false },
-  { key: 'sella_carta', label: 'Sella carta', hasParser: false },
+  { key: 'sella_conto', label: 'Sella conto', hasParser: true },
+  { key: 'sella_carta', label: 'Sella carta', hasParser: true },
   { key: 'paypal', label: 'PayPal', hasParser: true },
-  { key: 'revolut', label: 'Revolut', hasParser: false },
+  { key: 'revolut', label: 'Revolut', hasParser: true },
 ]
 
 interface ContoStats {

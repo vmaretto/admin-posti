@@ -35,6 +35,9 @@ const SPECIAL_OPTIONS: ImportOption[] = [
 // Parser conto noti: mappa conto.key → endpoint backend
 const CONTO_ENDPOINT: Record<string, { url: string; format: 'pdf' | 'csv' }> = {
   qonto: { url: '/api/import/qonto', format: 'pdf' },
+  sella_conto: { url: '/api/import/sella-conto', format: 'pdf' },
+  sella_carta: { url: '/api/import/sella-carta', format: 'pdf' },
+  revolut: { url: '/api/import/revolut', format: 'pdf' },
   // paypal in conti_config va comunque tramite l'endpoint paypal csv esistente
   paypal: { url: '/api/import/paypal', format: 'csv' },
 }

@@ -1,136 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabase'
+import { parsePayPalCSV } from '@/lib/parsers/paypal-csv'
+import { insertTransazioni } from '@/lib/parsers/import-helpers'
 
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
 
-function parsePayPalDate(dateStr: string): string {
-  // Format: DD/MM/YYYY -> YYYY-MM-DD
-  const cleaned = dateStr.replace(/['"]/g, '').trim()
-  const [day, month, year] = cleaned.split('/')
-  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
-}
-
-function parsePayPalAmount(value: string): number {
-  // Format: "-123,01" or "123,01"
-  const cleaned = value.replace(/['"]/g, '').trim()
-  return parseFloat(cleaned.replace(',', '.').replace(/\s/g, ''))
-}
-
-function cleanString(value: string): string {
-  return value.replace(/^['"]|['"]$/g, '').trim()
-}
-
+// POST /api/import/paypal
+// Body JSON: { csvContent: string }  (compatibilità retro con la pagina /import)
+// Inserisce in transazioni con conto='paypal'.
+//
+// Fix rispetto alla precedente versione:
+//  - Strip BOM UTF-8 (Data, prima riga)
+//  - Skip righe "In sospeso" e "Bonifico bancario" (anti-duplicato del movimento)
+//  - Dedup su (conto, data, importo, controparte) limitato al periodo, niente
+//    più upsert su constraint inesistente.
+//  - Risposta allineata agli altri parser: { imported, skipped, parsed, periodo, ... }
 export async function POST(request: NextRequest) {
+  let body: { csvContent?: string }
   try {
-    const { csvContent } = await request.json()
-    
-    if (!csvContent) {
-      return NextResponse.json({ error: 'Missing csvContent' }, { status: 400 })
-    }
-
-    const supabase = createServerClient()
-    const lines = csvContent.split('\n').filter((l: string) => l.trim())
-    
-    if (lines.length < 2) {
-      return NextResponse.json({ error: 'CSV vuoto o invalido' }, { status: 400 })
-    }
-
-    // PayPal CSV uses comma as separator with quoted fields
-    const parseCSVLine = (line: string): string[] => {
-      const result = []
-      let current = ''
-      let inQuotes = false
-      
-      for (const char of line) {
-        if (char === '"') {
-          inQuotes = !inQuotes
-        } else if (char === ',' && !inQuotes) {
-          result.push(current)
-          current = ''
-        } else {
-          current += char
-        }
-      }
-      result.push(current)
-      return result
-    }
-
-    const headers = parseCSVLine(lines[0]).map(h => cleanString(h).toLowerCase())
-    const transazioni = []
-    const errors = []
-
-    // Find column indices
-    const dataIdx = headers.findIndex(h => h === 'data')
-    const nomeIdx = headers.findIndex(h => h === 'nome')
-    const tipoIdx = headers.findIndex(h => h === 'tipo')
-    const statoIdx = headers.findIndex(h => h === 'stato')
-    const nettoIdx = headers.findIndex(h => h === 'netto')
-    const lordoIdx = headers.findIndex(h => h === 'lordo')
-    const codiceIdx = headers.findIndex(h => h.includes('codice transazione') && !h.includes('riferimento'))
-    const oggettoIdx = headers.findIndex(h => h.includes('titolo oggetto'))
-
-    for (let i = 1; i < lines.length; i++) {
-      try {
-        const values = parseCSVLine(lines[i])
-        
-        const stato = cleanString(values[statoIdx] || '')
-        const tipo = cleanString(values[tipoIdx] || '')
-        
-        // Skip pending transactions and bank transfers (duplicates)
-        if (stato.toLowerCase().includes('sospeso') || 
-            tipo.toLowerCase().includes('bonifico bancario')) {
-          continue
-        }
-
-        const importo = parsePayPalAmount(values[nettoIdx] || values[lordoIdx] || '0')
-        
-        if (importo === 0) continue
-
-        const transazione = {
-          data: parsePayPalDate(values[dataIdx] || ''),
-          importo: Math.abs(importo),
-          tipo: importo < 0 ? 'uscita' : 'entrata',
-          descrizione: cleanString(values[oggettoIdx] || values[tipoIdx] || ''),
-          controparte: cleanString(values[nomeIdx] || ''),
-          conto: 'paypal',
-          riferimento: cleanString(values[codiceIdx] || ''),
-          stato_riconciliazione: 'da_riconciliare'
-        }
-
-        if (transazione.data && transazione.riferimento) {
-          transazioni.push(transazione)
-        }
-      } catch (err) {
-        errors.push({ line: i + 1, error: String(err) })
-      }
-    }
-
-    if (transazioni.length === 0) {
-      return NextResponse.json({ error: 'Nessuna transazione valida trovata', errors }, { status: 400 })
-    }
-
-    // Upsert transazioni
-    const { data, error } = await supabase
-      .from('transazioni')
-      .upsert(transazioni, { 
-        onConflict: 'data,importo,conto,riferimento',
-        ignoreDuplicates: true 
-      })
-      .select()
-
-    if (error) {
-      console.error('Supabase error:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json({ 
-      success: true, 
-      imported: transazioni.length,
-      errors: errors.length > 0 ? errors : undefined
-    })
-
-  } catch (error) {
-    console.error('Import error:', error)
-    return NextResponse.json({ error: String(error) }, { status: 500 })
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'JSON invalido' }, { status: 400 })
   }
+  if (!body?.csvContent) {
+    return NextResponse.json({ error: 'csvContent richiesto' }, { status: 400 })
+  }
+
+  const parsed = parsePayPalCSV(body.csvContent)
+  if (parsed.transactions.length === 0) {
+    return NextResponse.json({
+      error: 'Nessuna transazione riconosciuta nel CSV PayPal.',
+      warnings: parsed.warnings,
+      hint: 'Verifica che sia un export PayPal con header italiano. In caso di dubbio mandami il file.',
+    }, { status: 400 })
+  }
+
+  return insertTransazioni(
+    'paypal',
+    parsed.transactions.map(t => ({
+      data: t.data,
+      importo: t.importo,
+      tipo: t.tipo,
+      controparte: t.controparte,
+      descrizione: t.descrizione,
+      riferimento: t.riferimento,
+      note: [
+        t.riferimentoOrig ? `Codice rif. PayPal: ${t.riferimentoOrig}` : null,
+        t.emailContraente ? `Email: ${t.emailContraente}` : null,
+      ].filter(Boolean).join(' · ') || null,
+    })),
+    { from: parsed.periodoFrom, to: parsed.periodoTo },
+    {
+      totali: { entrate: parsed.totaleEntrate, uscite: parsed.totaleUscite },
+      warnings: parsed.warnings,
+    },
+  )
 }

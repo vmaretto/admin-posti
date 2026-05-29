@@ -208,11 +208,15 @@ function WizardInner() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [lastMatchResult, setLastMatchResult] = useState<any>(null)
   const [llmRunning, setLlmRunning] = useState(false)
+  // Dopo la disambigua AI: lista decision combinata con le suggestion originali
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [llmEvaluation, setLlmEvaluation] = useState<any[] | null>(null)
 
   async function lanciaAutoMatch() {
     if (!periodo.from || !periodo.to) return
     setLoading(true)
     setLastMatchResult(null)
+    setLlmEvaluation(null)
     try {
       const res = await fetch(
         `/api/riconcilia/auto?from=${periodo.from}&to=${periodo.to}`,
@@ -235,11 +239,12 @@ function WizardInner() {
   async function disambiguaConAI() {
     if (!lastMatchResult?.suggestions?.length) return
     setLlmRunning(true)
+    const originalSuggestions = lastMatchResult.suggestions
     try {
       const res = await fetch('/api/riconcilia/llm-disambiguate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ suggestions: lastMatchResult.suggestions, apply: true }),
+        body: JSON.stringify({ suggestions: originalSuggestions, apply: true }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -250,8 +255,27 @@ function WizardInner() {
         }
         return
       }
+      // Combina ogni suggestion originale con la decisione AI corrispondente
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const evaluations = originalSuggestions.map((s: any, i: number) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const decision = (data.decisions || []).find((d: any) => d.index === i)
+        const isApplied = decision?.match && decision?.confidence === 'high'
+        return {
+          ...s,
+          decision,
+          isApplied,
+        }
+      })
+      setLlmEvaluation(evaluations)
       showFeedback('ok', `AI ha valutato ${data.decisions?.length || 0} candidati, applicati ${data.applied || 0}`)
-      setLastMatchResult({ ...lastMatchResult, suggestions: [], applied_by_llm: data.applied || 0 })
+      // Vuoto le suggestion grezze e aggiorno i counter
+      setLastMatchResult({
+        ...lastMatchResult,
+        suggestions: [],
+        suggested: 0,
+        appliedByLLM: data.applied || 0,
+      })
       await reloadStats()
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore LLM')
@@ -259,6 +283,26 @@ function WizardInner() {
       setLlmRunning(false)
     }
   }
+
+  // Scollega un abbinamento esistente (manda DELETE a /api/riconcilia)
+  async function scollegaAbbinamento(fatturaId: string) {
+    if (!confirm('Scollegare questo abbinamento? La trans e la fattura torneranno entrambe "da_riconciliare".')) return
+    try {
+      const res = await fetch(`/api/riconcilia?fatturaId=${encodeURIComponent(fatturaId)}`, {
+        method: 'DELETE',
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', 'Abbinamento scollegato')
+      await reloadStats()
+      // Triggera reload della lista abbinamenti tramite un counter di refresh
+      setAbbinamentiRefreshCounter(c => c + 1)
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  const [abbinamentiRefreshCounter, setAbbinamentiRefreshCounter] = useState(0)
 
   // Accetta manualmente un suggerimento (lo applica al DB)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -544,10 +588,13 @@ function WizardInner() {
               loading={loading}
               lastResult={lastMatchResult}
               llmRunning={llmRunning}
+              llmEvaluation={llmEvaluation}
+              abbinamentiRefreshCounter={abbinamentiRefreshCounter}
               onAutoMatch={lanciaAutoMatch}
               onDisambiguaAI={disambiguaConAI}
               onAcceptSuggestion={accettaSuggerimento}
               onRejectSuggestion={rifiutaSuggerimento}
+              onScollegaAbbinamento={scollegaAbbinamento}
               onNext={() => setStep(4)}
               onBack={() => setStep(2)}
             />
@@ -1016,7 +1063,7 @@ function formatDate(d: string | null | undefined): string {
 }
 
 function StepAutoMatch({
-  periodo, stats, loading, lastResult, llmRunning, onAutoMatch, onDisambiguaAI, onAcceptSuggestion, onRejectSuggestion, onNext, onBack,
+  periodo, stats, loading, lastResult, llmRunning, llmEvaluation, abbinamentiRefreshCounter, onAutoMatch, onDisambiguaAI, onAcceptSuggestion, onRejectSuggestion, onScollegaAbbinamento, onNext, onBack,
 }: {
   periodo: ReturnType<typeof parsePeriodo>
   stats: WizardStats | null
@@ -1024,12 +1071,16 @@ function StepAutoMatch({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   lastResult: any
   llmRunning: boolean
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  llmEvaluation: any[] | null
+  abbinamentiRefreshCounter: number
   onAutoMatch: () => void
   onDisambiguaAI: () => void
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onAcceptSuggestion: (s: any) => void
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onRejectSuggestion: (s: any) => void
+  onScollegaAbbinamento: (fatturaId: string) => void
   onNext: () => void
   onBack: () => void
 }) {
@@ -1044,7 +1095,7 @@ function StepAutoMatch({
   const [loadingAbbinamenti, setLoadingAbbinamenti] = useState(false)
   const [showAbbinamenti, setShowAbbinamenti] = useState(false)
 
-  async function loadAbbinamenti() {
+  const loadAbbinamenti = useCallback(async () => {
     if (!periodo.from || !periodo.to) return
     setLoadingAbbinamenti(true)
     try {
@@ -1056,7 +1107,15 @@ function StepAutoMatch({
     } finally {
       setLoadingAbbinamenti(false)
     }
-  }
+  }, [periodo.from, periodo.to])
+
+  // Quando l'esterno triggera un refresh (es. dopo scollega), ricarico se la sezione è aperta
+  useEffect(() => {
+    if (showAbbinamenti && abbinamentiRefreshCounter > 0) {
+      loadAbbinamenti()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abbinamentiRefreshCounter])
 
   return (
     <div>
@@ -1115,8 +1174,8 @@ function StepAutoMatch({
             </div>
           </div>
 
-          {/* Lista degli applicati con AI (dopo Disambigua) */}
-          {appliedByLLM.length > 0 && (
+          {/* Lista degli applicati con AI (dopo Disambigua) — legacy fallback */}
+          {appliedByLLM.length > 0 && !llmEvaluation && (
             <div className="bg-white dark:bg-gray-800 px-4 py-3 border-t border-indigo-200 dark:border-indigo-800">
               <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 mb-2">
                 ✓ Match applicati dall&apos;AI:
@@ -1143,6 +1202,93 @@ function StepAutoMatch({
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Pannello completo valutazione AI: TUTTE le decisioni (applicate + suggerite + scartate) */}
+          {llmEvaluation && llmEvaluation.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 px-4 py-3 border-t border-indigo-200 dark:border-indigo-800">
+              <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-3">
+                Risultato Disambigua AI ({llmEvaluation.length} candidati valutati)
+              </p>
+              <div className="space-y-2 max-h-[500px] overflow-y-auto">
+                {llmEvaluation.map((e, idx) => {
+                  const decision = e.decision
+                  const isApplied = e.isApplied
+                  const aiSaysMatch = decision?.match
+                  const confidence = decision?.confidence || 'low'
+                  // Stato visuale
+                  let bgClass = 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700'
+                  let statoLabel = '? sconosciuto'
+                  let statoClass = 'bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
+                  if (isApplied) {
+                    bgClass = 'bg-emerald-50 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
+                    statoLabel = '✓ Applicato'
+                    statoClass = 'bg-emerald-600 text-white'
+                  } else if (aiSaysMatch) {
+                    bgClass = 'bg-amber-50 dark:bg-amber-950 border-amber-300 dark:border-amber-700'
+                    statoLabel = `AI dice match (conf. ${confidence})`
+                    statoClass = 'bg-amber-500 text-white'
+                  } else {
+                    bgClass = 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'
+                    statoLabel = `AI dice NO match (conf. ${confidence})`
+                    statoClass = 'bg-red-500 text-white'
+                  }
+                  return (
+                    <div key={idx} className={`text-xs rounded px-3 py-2 border ${bgClass}`}>
+                      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                        <span className={`text-[10px] uppercase font-bold rounded px-2 py-0.5 ${statoClass}`}>
+                          {statoLabel}
+                        </span>
+                        <span className="text-[10px] text-gray-500 dark:text-gray-400">score originale {e.score}/100</span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <div className="bg-white/60 dark:bg-gray-900/60 rounded px-2 py-1.5">
+                          <p className="text-[10px] uppercase text-red-700 dark:text-red-300 font-semibold">Transazione</p>
+                          <p className="font-medium text-gray-900 dark:text-white truncate" title={e.transControparte}>
+                            {e.transControparte || '—'}
+                          </p>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                            {formatDate(e.transData)} · {formatCurrency(Math.abs(e.transImporto || 0))}
+                          </p>
+                        </div>
+                        <div className="bg-white/60 dark:bg-gray-900/60 rounded px-2 py-1.5">
+                          <p className="text-[10px] uppercase text-emerald-700 dark:text-emerald-300 font-semibold">Fattura</p>
+                          <p className="font-medium text-gray-900 dark:text-white truncate" title={e.fatturaSoggetto}>
+                            {e.fatturaSoggetto || '—'}
+                          </p>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                            {e.fatturaNumero || '—'} · {formatDate(e.fatturaData)} · {formatCurrency(e.fatturaTotale || 0)}
+                          </p>
+                        </div>
+                      </div>
+                      {decision?.reason && (
+                        <p className={`text-[10px] mt-1 italic ${isApplied ? 'text-emerald-700 dark:text-emerald-300' : aiSaysMatch ? 'text-amber-700 dark:text-amber-300' : 'text-red-700 dark:text-red-300'}`}>
+                          🤖 AI: {decision.reason}
+                        </p>
+                      )}
+                      {/* Bottoni azione: per le NON applicate offro Accetta. Per tutte offro Rifiuta (rimuovi dalla lista) */}
+                      {!isApplied && (
+                        <div className="flex justify-end gap-2 mt-2">
+                          <button
+                            onClick={() => onRejectSuggestion(e)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200"
+                          >
+                            <X className="h-3 w-3" /> Rimuovi dalla lista
+                          </button>
+                          <button
+                            onClick={() => onAcceptSuggestion(e)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
+                            title={aiSaysMatch ? 'Approva il match suggerito dall\'AI' : 'Forza il match anche se l\'AI dice no'}
+                          >
+                            <Check className="h-3 w-3" /> {aiSaysMatch ? 'Approva' : 'Forza accetta'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -1265,22 +1411,31 @@ function StepAutoMatch({
               <div className="space-y-1 max-h-96 overflow-y-auto">
                 {abbinamenti.map((a, idx) => (
                   <div key={idx} className="text-xs bg-emerald-50/50 dark:bg-emerald-950/30 rounded px-3 py-2 border border-emerald-200/50 dark:border-emerald-800/50">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      <div>
-                        <p className="text-[10px] uppercase text-gray-500">Trans</p>
-                        <p className="font-medium dark:text-white truncate">{a.trans?.controparte || a.trans?.descrizione || '—'}</p>
-                        <p className="text-[10px] text-gray-600 dark:text-gray-400">
-                          {a.trans ? formatDate(a.trans.data) : ''} · {a.trans?.conto} · {a.trans ? formatCurrency(Math.abs(a.trans.importo)) : ''}
-                        </p>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 flex-1 min-w-0">
+                        <div>
+                          <p className="text-[10px] uppercase text-gray-500">Trans</p>
+                          <p className="font-medium dark:text-white truncate">{a.trans?.controparte || a.trans?.descrizione || '—'}</p>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                            {a.trans ? formatDate(a.trans.data) : ''} · {a.trans?.conto} · {a.trans ? formatCurrency(Math.abs(a.trans.importo)) : ''}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase text-gray-500">Fattura</p>
+                          <p className="font-medium dark:text-white truncate">{a.fattura.soggetto}</p>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                            {a.fattura.numero} · {formatDate(a.fattura.data)} · {formatCurrency(a.fattura.totale)}
+                            {a.fattura.tipo === 'emessa' ? ' (emessa)' : ' (ricevuta)'}
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-[10px] uppercase text-gray-500">Fattura</p>
-                        <p className="font-medium dark:text-white truncate">{a.fattura.soggetto}</p>
-                        <p className="text-[10px] text-gray-600 dark:text-gray-400">
-                          {a.fattura.numero} · {formatDate(a.fattura.data)} · {formatCurrency(a.fattura.totale)}
-                          {a.fattura.tipo === 'emessa' ? ' (emessa)' : ' (ricevuta)'}
-                        </p>
-                      </div>
+                      <button
+                        onClick={() => onScollegaAbbinamento(a.fattura.id)}
+                        className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-100 hover:bg-red-200 dark:bg-red-900 dark:hover:bg-red-800 text-red-700 dark:text-red-200"
+                        title="Scollega questo abbinamento (trans e fattura tornano da_riconciliare)"
+                      >
+                        <X className="h-3 w-3" /> Scollega
+                      </button>
                     </div>
                   </div>
                 ))}

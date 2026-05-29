@@ -236,19 +236,26 @@ export function tipoCoherent(fattura: FatturaForMatch, trans: TransForMatch): bo
   )
 }
 
+export interface MatchOptions {
+  aliasResolver?: AliasResolver
+  // Finestra date personalizzata per il soggetto (da match_history).
+  // Se assente, usa la finestra default -30/+120.
+  dateWindow?: { minDays: number; maxDays: number }
+}
+
 export function computeMatchScore(
   fattura: FatturaForMatch,
   trans: TransForMatch,
-  aliasResolver?: AliasResolver,
+  opts?: MatchOptions,
 ): ScoreBreakdown {
   if (!tipoCoherent(fattura, trans)) {
     return { subjectScore: 0, subjectReason: 'tipo incoerente', referenceScore: 0, amountScore: 0, dateScore: 0, totalScore: 0 }
   }
   const soggetto = getSoggetto(fattura)
-  const { score: subjectScore, reason: subjectReason } = subjectMatchScore(soggetto, trans.controparte || '', aliasResolver)
+  const { score: subjectScore, reason: subjectReason } = subjectMatchScore(soggetto, trans.controparte || '', opts?.aliasResolver)
   const referenceScore = referenceMatchScore(fattura.numero, [trans.descrizione, trans.riferimento, trans.note])
   const amountScore = amountMatchScore(fattura.totale, trans.importo)
-  const dateScore = dateMatchScore(fattura.data_emissione, trans.data)
+  const dateScore = dateMatchScore(fattura.data_emissione, trans.data, opts?.dateWindow)
   const totalScore =
     SCORE_WEIGHTS.subject * subjectScore +
     SCORE_WEIGHTS.reference * referenceScore +

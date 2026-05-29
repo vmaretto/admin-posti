@@ -819,11 +819,14 @@ function SoggettiPageInner() {
     }
   }
 
+  // Suggerimenti incerti (score 50-79) restituiti dall'auto-match.
+  // Possono essere disambiguati dal LLM se è configurato.
+  const [pendingSuggestions, setPendingSuggestions] = useState<unknown[]>([])
+  const [llmRunning, setLlmRunning] = useState(false)
+
   async function handleAutoMatch() {
     setAutoMatching(true)
     try {
-      // Se c'è un periodo attivo, lo passo all'auto-match così opera solo
-      // sul finestra temporale selezionata.
       let url = '/api/riconcilia/auto'
       if (periodo.from && periodo.to) {
         url += `?from=${periodo.from}&to=${periodo.to}`
@@ -831,12 +834,45 @@ function SoggettiPageInner() {
       const res = await fetch(url, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', `Match automatici: ${data.matched || 0}`)
+      const matched = data.matched || 0
+      const suggested = data.suggested || 0
+      showFeedback('ok', `Match automatici: ${matched} applicati${suggested ? ` · ${suggested} suggerimenti da disambiguare` : ''}`)
+      setPendingSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [])
       await load()
     } catch (err: unknown) {
       showFeedback('err', err instanceof Error ? err.message : 'Errore')
     } finally {
       setAutoMatching(false)
+    }
+  }
+
+  async function handleDisambiguaAI() {
+    if (pendingSuggestions.length === 0) return
+    setLlmRunning(true)
+    try {
+      const res = await fetch('/api/riconcilia/llm-disambiguate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suggestions: pendingSuggestions, apply: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (res.status === 503) {
+          showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
+        } else {
+          throw new Error(data.error || 'Errore')
+        }
+        return
+      }
+      const applied = data.applied || 0
+      const totalDecisions = data.decisions?.length || 0
+      showFeedback('ok', `AI ha valutato ${totalDecisions} suggerimenti, applicati ${applied} match high-confidence`)
+      setPendingSuggestions([])
+      await load()
+    } catch (err: unknown) {
+      showFeedback('err', err instanceof Error ? err.message : 'Errore LLM')
+    } finally {
+      setLlmRunning(false)
     }
   }
 
@@ -1420,6 +1456,32 @@ function SoggettiPageInner() {
             : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
         }`}>
           {feedback.text}
+        </div>
+      )}
+
+      {/* Banner suggerimenti incerti: disambiguazione AI */}
+      {pendingSuggestions.length > 0 && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-blue-50 dark:bg-blue-950 border border-blue-300 dark:border-blue-700 text-sm flex items-center justify-between gap-4 flex-wrap">
+          <div className="text-blue-900 dark:text-blue-100">
+            <strong>{pendingSuggestions.length} match incerti</strong> (score 50-79).
+            L&apos;AI può decidere se sono lo stesso soggetto (es. &quot;Google Cloud EMEA&quot; vs &quot;Google Italy&quot;).
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPendingSuggestions([])}
+              className="px-3 py-1 text-xs rounded bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200"
+            >
+              Ignora
+            </button>
+            <button
+              onClick={handleDisambiguaAI}
+              disabled={llmRunning}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              {llmRunning ? 'AI sta valutando…' : 'Disambigua con AI'}
+            </button>
+          </div>
         </div>
       )}
 

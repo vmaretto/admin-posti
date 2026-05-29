@@ -14,6 +14,7 @@ import {
   TransForMatch,
   normalizeName,
 } from '@/lib/matching'
+import { getLearnedDateWindowsBatch } from '@/lib/learning'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,6 +31,16 @@ interface MatchDetail {
 
 interface SuggestionDetail extends MatchDetail {
   fatture_label?: string[]
+  // Dati grezzi necessari al LLM disambiguator
+  fatturaSoggetto?: string
+  fatturaNumero?: string | null
+  fatturaData?: string
+  fatturaTotale?: number
+  transData?: string
+  transImporto?: number
+  transControparte?: string | null
+  transDescrizione?: string | null
+  fattura_id?: string
 }
 
 interface MatchResult {
@@ -103,6 +114,14 @@ async function findAutoMatches(
     .select('variant_normalizzata, soggetto_canonico')
   const aliasResolver = new MapAliasResolver(aliasRows || [])
 
+  // 2.1) Carica le finestre date apprese (mean ± 2σ) per i soggetti che
+  // compaiono tra le nostre fatture. Le useremo come override del default
+  // -30/+120 per ridurre i falsi positivi sui pagatori ricorrenti.
+  const soggettiInPlay = Array.from(new Set(
+    fatture.map(f => getSoggetto(f as FatturaForMatch)).filter(Boolean),
+  ))
+  const learnedWindows = await getLearnedDateWindowsBatch(supabase, soggettiInPlay).catch(() => new Map())
+
   // 3) Pass 1 — 1:1 con scoring
   const matches: MatchDetail[] = []
   const suggestions: SuggestionDetail[] = []
@@ -125,7 +144,10 @@ async function findAutoMatches(
       const days = (new Date(trans.data).getTime() - new Date(f.data_emissione).getTime()) / (1000 * 60 * 60 * 24)
       if (days < -60 || days > 240) continue // pre-filter generoso
 
-      const breakdown = computeMatchScore(f as FatturaForMatch, trans as TransForMatch, aliasResolver)
+      const soggetto = getSoggetto(f as FatturaForMatch)
+      const learned = learnedWindows.get(soggetto)
+      const dateWindow = learned ? { minDays: learned.minDays, maxDays: learned.maxDays } : undefined
+      const breakdown = computeMatchScore(f as FatturaForMatch, trans as TransForMatch, { aliasResolver, dateWindow })
       if (!bestScore || breakdown.totalScore > bestScore.totalScore) {
         bestScore = breakdown
         bestFat = f
@@ -148,7 +170,8 @@ async function findAutoMatches(
       usedFatture.add(bestFat.id)
       usedTransazioni.add(trans.id)
     } else if (bestScore.totalScore >= SCORE_SUGGEST_THRESHOLD) {
-      // Salva come suggerimento — NON modifica DB
+      // Salva come suggerimento — NON modifica DB. Include i dati grezzi
+      // necessari al LLM disambiguator.
       suggestions.push({
         fattura_ids: [bestFat.id],
         transazione_id: trans.id,
@@ -159,6 +182,15 @@ async function findAutoMatches(
         score: Math.round(bestScore.totalScore),
         scoreBreakdown: bestScore,
         fatture_label: [bestFat.numero],
+        fattura_id: bestFat.id,
+        fatturaSoggetto: getSoggetto(bestFat as FatturaForMatch),
+        fatturaNumero: bestFat.numero,
+        fatturaData: bestFat.data_emissione,
+        fatturaTotale: bestFat.totale,
+        transData: trans.data,
+        transImporto: trans.importo,
+        transControparte: trans.controparte,
+        transDescrizione: trans.descrizione || trans.riferimento,
       })
     }
   }

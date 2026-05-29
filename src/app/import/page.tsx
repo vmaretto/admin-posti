@@ -6,15 +6,16 @@ import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Upload, FileText, CheckCircle, AlertCircle, Trash2 } from 'lucide-react'
 
-type ImportType = 'fatture_emesse' | 'fatture_ricevute' | 'paypal'
+type ImportType = 'fatture_emesse' | 'fatture_ricevute' | 'paypal' | 'qonto'
+
+const ALL_TYPES: ImportType[] = ['fatture_emesse', 'fatture_ricevute', 'paypal', 'qonto']
 
 function ImportPageInner() {
   const searchParams = useSearchParams()
   const typeParam = searchParams.get('type') as ImportType | null
   const [selectedType, setSelectedType] = useState<ImportType>(typeParam || 'fatture_emesse')
-  // Sincronizza quando cambia ?type=
   useEffect(() => {
-    if (typeParam && (typeParam === 'fatture_emesse' || typeParam === 'fatture_ricevute' || typeParam === 'paypal')) {
+    if (typeParam && ALL_TYPES.includes(typeParam)) {
       setSelectedType(typeParam)
     }
   }, [typeParam])
@@ -31,52 +32,64 @@ function ImportPageInner() {
 
   const handleImport = async () => {
     if (!file) return
-    
+
     setLoading(true)
     setResult(null)
-    
+
     try {
-      const content = await file.text()
-      
-      let endpoint = ''
-      let body: Record<string, unknown> = {}
-      
-      if (selectedType === 'fatture_emesse' || selectedType === 'fatture_ricevute') {
-        endpoint = '/api/import/fatture-sdi'
-        body = {
-          csvContent: content,
-          tipo: selectedType === 'fatture_emesse' ? 'emessa' : 'ricevuta'
+      let res: Response
+
+      if (selectedType === 'qonto') {
+        // Qonto: upload PDF via multipart/form-data (parsing server-side)
+        const form = new FormData()
+        form.append('file', file)
+        res = await fetch('/api/import/qonto', { method: 'POST', body: form })
+      } else {
+        // SDI e PayPal: invio il CSV come stringa JSON
+        const content = await file.text()
+        let endpoint = ''
+        let body: Record<string, unknown> = {}
+        if (selectedType === 'fatture_emesse' || selectedType === 'fatture_ricevute') {
+          endpoint = '/api/import/fatture-sdi'
+          body = {
+            csvContent: content,
+            tipo: selectedType === 'fatture_emesse' ? 'emessa' : 'ricevuta',
+          }
+        } else if (selectedType === 'paypal') {
+          endpoint = '/api/import/paypal'
+          body = { csvContent: content }
         }
-      } else if (selectedType === 'paypal') {
-        endpoint = '/api/import/paypal'
-        body = { csvContent: content }
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
       }
-      
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      })
-      
+
       const data = await res.json()
-      
+
       if (res.ok) {
+        const parts: string[] = []
+        parts.push(`Importate ${data.imported} righe`)
+        if (typeof data.skipped === 'number' && data.skipped > 0) parts.push(`${data.skipped} duplicati saltati`)
+        if (typeof data.parsed === 'number' && data.parsed !== data.imported) parts.push(`(${data.parsed} totali nel file)`)
+        if (data.periodo?.from) parts.push(`· periodo ${data.periodo.from} → ${data.periodo.to}`)
         setResult({
           success: true,
-          message: `Importate ${data.imported} righe con successo`,
-          count: data.imported
+          message: parts.join(' · '),
+          count: data.imported,
         })
         setFile(null)
       } else {
         setResult({
           success: false,
-          message: data.error || 'Errore durante l\'import'
+          message: data.error || data.hint || 'Errore durante l\'import',
         })
       }
     } catch (err) {
       setResult({
         success: false,
-        message: String(err)
+        message: String(err),
       })
     }
     
@@ -129,17 +142,18 @@ function ImportPageInner() {
                 <option value="fatture_emesse">Fatture Emesse (SDI)</option>
                 <option value="fatture_ricevute">Fatture Ricevute (SDI)</option>
                 <option value="paypal">Transazioni PayPal</option>
+                <option value="qonto">Estratto conto Qonto (PDF)</option>
               </select>
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                File CSV
+                {selectedType === 'qonto' ? 'File PDF' : 'File CSV'}
               </label>
               <div className="border-2 border-dashed rounded-lg p-6 text-center">
                 <input
                   type="file"
-                  accept=".csv"
+                  accept={selectedType === 'qonto' ? '.pdf' : '.csv'}
                   onChange={handleFileChange}
                   className="hidden"
                   id="file-input"
@@ -194,15 +208,28 @@ function ImportPageInner() {
                 Campi: Data, Nome, Tipo, Stato, Netto, Codice transazione
               </p>
             </div>
-            
+
+            <div className="p-4 bg-indigo-50 rounded-lg">
+              <h3 className="font-semibold text-indigo-800 mb-2">Qonto (PDF)</h3>
+              <p className="text-indigo-700">
+                Estratto conto Qonto in formato <code className="bg-indigo-100 px-1 rounded">.pdf</code>
+              </p>
+              <p className="text-indigo-600 text-xs mt-1">
+                Parsing automatico: periodo, saldi, transazioni, valute originali (USD/GBP/...), riferimenti fattura.
+                Idempotente: rilanci lo stesso file e i duplicati vengono saltati.
+              </p>
+            </div>
+
             <div className="p-4 bg-gray-50 rounded-lg">
               <h3 className="font-semibold text-gray-800 mb-2">Coming Soon</h3>
               <ul className="text-gray-600 list-disc list-inside">
-                <li>Estratti conto Qonto (PDF)</li>
-                <li>Estratti conto Wise (PDF)</li>
-                <li>Estratti conto Banca Sella (PDF)</li>
+                <li>Estratti conto Sella conto/carta</li>
+                <li>Estratti conto Revolut</li>
                 <li>Fatture estere (PDF)</li>
               </ul>
+              <p className="text-gray-500 text-xs mt-2">
+                Mandami un sample dell&apos;estratto conto e te lo integro.
+              </p>
             </div>
           </div>
         </div>

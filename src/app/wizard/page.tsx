@@ -688,9 +688,13 @@ function ContoTile({ c, periodo, onRemove }: { c: ContoDettaglio; periodo: Retur
     'no-parser': { label: '—', cls: 'bg-gray-200 text-gray-900 dark:bg-gray-700 dark:text-gray-100' },
   }[status]
 
-  // Per PayPal il parser esiste → link diretto a /import?type=paypal
-  // Per gli altri non c'è il parser → link generico a /import con nota
-  const importLink = c.conto === 'paypal' ? '/import?type=paypal' : '/import'
+  // Conti con parser → link diretto a /import?type=<conto>. Per gli altri
+  // restiamo sulla /import generica.
+  const importLink = c.conto === 'paypal'
+    ? '/import?type=paypal'
+    : c.conto === 'qonto'
+      ? '/import?type=qonto'
+      : '/import'
 
   return (
     <div className={`relative border-2 rounded-lg p-4 ${styles}`}>

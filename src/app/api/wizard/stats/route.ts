@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic'
 // Fallback se la tabella conti_config non esiste ancora (migration non lanciata).
 // Wise rimosso: ora le fonti sono configurabili dal frontend (Step 1).
 const FALLBACK_CONTI_ATTESI: { key: string; label: string; hasParser: boolean }[] = [
-  { key: 'qonto', label: 'Qonto', hasParser: false },
+  { key: 'qonto', label: 'Qonto', hasParser: true },
   { key: 'sella_conto', label: 'Sella conto', hasParser: false },
   { key: 'sella_carta', label: 'Sella carta', hasParser: false },
   { key: 'paypal', label: 'PayPal', hasParser: true },

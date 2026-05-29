@@ -143,7 +143,7 @@ Decidi per ogni coppia se la trans sta pagando quella fattura. Rispondi col JSON
     match: !!d?.match,
     confidence: (d?.confidence === 'high' || d?.confidence === 'medium' || d?.confidence === 'low')
       ? d.confidence : 'low',
-    reason: typeof d?.reason === 'string' ? d.reason.slice(0, 300) : '',
+    reason: typeof d?.reason === 'string' ? d.reason.slice(0, 1000) : '',
   }))
 
   // Se apply=true, applica al DB le decisioni high-confidence con match=true

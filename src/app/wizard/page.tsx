@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   Calendar, Check, ChevronRight, Wand2, ArrowRight, RefreshCw, AlertTriangle,
-  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X, Sparkles,
+  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X, Sparkles, Trash2,
 } from 'lucide-react'
 import {
   parsePeriodo, formatPeriodoSlug, defaultPeriodoSlug, PeriodoTipo, MESI_LABELS,
@@ -304,6 +304,11 @@ function WizardInner() {
 
   const [abbinamentiRefreshCounter, setAbbinamentiRefreshCounter] = useState(0)
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function matchesPair(a: any, b: any) {
+    return a?.transazione_id === b?.transazione_id && a?.fattura_id === b?.fattura_id
+  }
+
   // Accetta manualmente un suggerimento (lo applica al DB)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function accettaSuggerimento(s: any) {
@@ -320,12 +325,10 @@ function WizardInner() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
       showFeedback('ok', `Match accettato: ${s.fatturaSoggetto || s.soggetto}`)
-      // Rimuovi dalla lista suggerimenti e aggiorna stats
+      // Aggiorna lastMatchResult: rimuovi dalle suggestion, incrementa matched
       if (lastMatchResult) {
-        const newSugg = (lastMatchResult.suggestions || []).filter(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (x: any) => x.transazione_id !== s.transazione_id || x.fattura_id !== s.fattura_id,
-        )
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const newSugg = (lastMatchResult.suggestions || []).filter((x: any) => !matchesPair(x, s))
         setLastMatchResult({
           ...lastMatchResult,
           suggestions: newSugg,
@@ -333,26 +336,42 @@ function WizardInner() {
           matched: (lastMatchResult.matched || 0) + 1,
         })
       }
+      // Aggiorna llmEvaluation se attivo: marca il record come isApplied
+      if (llmEvaluation) {
+        setLlmEvaluation(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          llmEvaluation.map((e: any) =>
+            matchesPair(e, s) ? { ...e, isApplied: true } : e,
+          ),
+        )
+      }
+      // Triggera reload abbinamenti
+      setAbbinamentiRefreshCounter(c => c + 1)
       await reloadStats()
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore')
     }
   }
 
-  // Rifiuta un suggerimento (lo rimuove dalla lista, no DB)
+  // Rifiuta un suggerimento: lo rimuove sia dalle suggestion grezze che dal
+  // pannello AI llmEvaluation. Nessun DB.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function rifiutaSuggerimento(s: any) {
-    if (!lastMatchResult) return
-    const newSugg = (lastMatchResult.suggestions || []).filter(
+    if (lastMatchResult) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (x: any) => x.transazione_id !== s.transazione_id || x.fattura_id !== s.fattura_id,
-    )
-    setLastMatchResult({
-      ...lastMatchResult,
-      suggestions: newSugg,
-      suggested: newSugg.length,
-    })
-    showFeedback('ok', 'Suggerimento rifiutato')
+      const newSugg = (lastMatchResult.suggestions || []).filter((x: any) => !matchesPair(x, s))
+      setLastMatchResult({
+        ...lastMatchResult,
+        suggestions: newSugg,
+        suggested: newSugg.length,
+      })
+    }
+    if (llmEvaluation) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const newEval = llmEvaluation.filter((e: any) => !matchesPair(e, s))
+      setLlmEvaluation(newEval.length > 0 ? newEval : null)
+    }
+    showFeedback('ok', 'Suggerimento rimosso dalla lista')
   }
 
   // Helper per cambiare periodo dal picker built-in
@@ -1534,7 +1553,11 @@ function StepClassificazione({
     ids: string[]
     motivo: string
     custom: string
+    memorizzaRegola: boolean
+    contropartiUniche: { display: string; norm: string }[]
   } | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [applyingRules, setApplyingRules] = useState(false)
 
   const reloadTrans = useCallback(async () => {
     if (!periodo.from || !periodo.to) return
@@ -1593,8 +1616,58 @@ function StepClassificazione({
     }
   }
 
+  // Estrae le controparti uniche da una lista di trans (per memorizza-regola)
+  function contropartiUnicheFromIds(ids: string[]): { display: string; norm: string }[] {
+    const result = new Map<string, string>()
+    for (const t of trans) {
+      if (!ids.includes(t.id)) continue
+      const display = (t.controparte || '').trim()
+      if (!display) continue
+      // normalizzazione semplice (lowercase, no punteggiatura)
+      const norm = display.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()
+      if (norm && !result.has(norm)) result.set(norm, display)
+    }
+    return Array.from(result.entries()).map(([norm, display]) => ({ norm, display }))
+  }
+
   function apriTralasciaSingola(tId: string) {
-    setTralasciaModal({ ids: [tId], motivo: '', custom: '' })
+    setTralasciaModal({
+      ids: [tId],
+      motivo: '',
+      custom: '',
+      memorizzaRegola: false,
+      contropartiUniche: contropartiUnicheFromIds([tId]),
+    })
+  }
+
+  function apriTralasciaMultipla() {
+    const ids = Array.from(selected)
+    if (ids.length === 0) return
+    setTralasciaModal({
+      ids,
+      motivo: '',
+      custom: '',
+      memorizzaRegola: false,
+      contropartiUniche: contropartiUnicheFromIds(ids),
+    })
+  }
+
+  function toggleSelected(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selezionaTutte() {
+    const nonEstero = trans.filter(t => !row.trans_estere_queue.includes(t.id)).map(t => t.id)
+    setSelected(new Set(nonEstero))
+  }
+
+  function deselezionaTutte() {
+    setSelected(new Set())
   }
 
   async function submitTralascia() {
@@ -1614,12 +1687,63 @@ function StepClassificazione({
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', `${tralasciaModal.ids.length} transazioni tralasciate`)
+
+      // Se l'utente ha spuntato "memorizza regola", salva una regola per ogni
+      // controparte distinta nelle trans selezionate
+      let regoleSalvate = 0
+      if (tralasciaModal.memorizzaRegola && tralasciaModal.contropartiUniche.length > 0) {
+        for (const c of tralasciaModal.contropartiUniche) {
+          try {
+            const r = await fetch('/api/auto-tralascia', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ controparte: c.display, motivo: motivoFinal }),
+            })
+            if (r.ok) regoleSalvate++
+          } catch { /* best effort */ }
+        }
+      }
+
+      const msg = regoleSalvate > 0
+        ? `${tralasciaModal.ids.length} trans tralasciate · ${regoleSalvate} regole memorizzate`
+        : `${tralasciaModal.ids.length} transazioni tralasciate`
+      showFeedback('ok', msg)
       setTralasciaModal(null)
+      setSelected(new Set())
       await reloadTrans()
       await onReloadStats()
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  // Applica TUTTE le regole memorizzate alle trans del periodo
+  async function applicaRegoleEsistenti() {
+    if (!periodo.from || !periodo.to) return
+    setApplyingRules(true)
+    try {
+      const res = await fetch(`/api/auto-tralascia/apply?from=${periodo.from}&to=${periodo.to}`, {
+        method: 'POST',
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      if (data.available === false) {
+        showFeedback('err', 'Tabella regole non esiste. Lancia la migration auto_tralascia_rules.sql.')
+        return
+      }
+      const applied = data.applied || 0
+      if (applied === 0) {
+        showFeedback('ok', 'Nessuna trans corrisponde a regole esistenti.')
+      } else {
+        const breakdown = (data.perRegola || []).map((r: { motivo: string; count: number }) => `${r.count} ${r.motivo}`).join(' · ')
+        showFeedback('ok', `${applied} trans tralasciate · ${breakdown}`)
+      }
+      await reloadTrans()
+      await onReloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    } finally {
+      setApplyingRules(false)
     }
   }
 
@@ -1633,9 +1757,47 @@ function StepClassificazione({
         oppure lasciala stare.
       </p>
 
-      <div className="bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-700 rounded p-3 mb-4 text-xs text-amber-900 dark:text-amber-100">
+      <div className="bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-700 rounded p-3 mb-3 text-xs text-amber-900 dark:text-amber-100">
         <strong>{row.trans_estere_queue.length}</strong> trans già marcate come Estero (vai allo Step 5 per caricarle).
       </div>
+
+      {/* Toolbar regole + selezione multipla */}
+      <div className="bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 rounded p-3 mb-4 flex items-center justify-between gap-3 flex-wrap text-xs">
+        <div>
+          <p className="font-semibold text-indigo-900 dark:text-indigo-100">Regole auto-tralascia</p>
+          <p className="text-indigo-700 dark:text-indigo-300 mt-0.5">
+            Tralascia ricorrenti (Stipendi, Agenzia delle Entrate, ecc.) memorizzando la regola: dalla prossima volta vengono tralasciate da sole.
+          </p>
+        </div>
+        <button
+          onClick={applicaRegoleEsistenti}
+          disabled={applyingRules}
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white whitespace-nowrap"
+        >
+          {applyingRules ? 'Applico…' : 'Applica regole esistenti'}
+        </button>
+      </div>
+
+      {/* Toolbar selezione multipla */}
+      {selected.size > 0 && (
+        <div className="sticky top-2 z-30 mb-3 bg-amber-600 text-white rounded shadow px-4 py-2 flex items-center justify-between gap-3 flex-wrap text-sm">
+          <span><strong>{selected.size}</strong> trans selezionate</span>
+          <div className="flex items-center gap-2">
+            <button onClick={selezionaTutte} className="px-3 py-1 bg-amber-500 hover:bg-amber-400 rounded text-xs font-medium">
+              Tutte ({trans.length})
+            </button>
+            <button onClick={deselezionaTutte} className="px-3 py-1 bg-amber-500 hover:bg-amber-400 rounded text-xs font-medium">
+              Deseleziona
+            </button>
+            <button
+              onClick={apriTralasciaMultipla}
+              className="inline-flex items-center gap-1 px-3 py-1 bg-red-500 hover:bg-red-400 rounded text-xs font-medium"
+            >
+              <Trash2 className="h-3 w-3" /> Tralascia selezionate…
+            </button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-center text-gray-500 py-8">Caricamento trans scoperte…</p>
@@ -1648,15 +1810,26 @@ function StepClassificazione({
           {trans.map(t => {
             const isEstero = queueSet.has(t.id)
             const importoAbs = Math.abs(t.importo)
+            const isSelected = selected.has(t.id)
             return (
               <div
                 key={t.id}
                 className={`flex items-center gap-3 px-3 py-2 rounded text-sm border ${
-                  isEstero
+                  isSelected
+                    ? 'bg-amber-50 dark:bg-amber-950 border-amber-400'
+                    : isEstero
                     ? 'bg-blue-50 dark:bg-blue-950 border-blue-300 dark:border-blue-700'
                     : 'bg-gray-50 dark:bg-gray-900 border-transparent'
                 }`}
               >
+                {!isEstero && (
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelected(t.id)}
+                    className="h-3.5 w-3.5 rounded border-gray-300 text-amber-600 flex-shrink-0"
+                  />
+                )}
                 <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
                   {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(importoAbs)}
                 </span>
@@ -1719,10 +1892,11 @@ function StepClassificazione({
             className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-lg font-semibold mb-1">Tralascia transazione</h3>
+            <h3 className="text-lg font-semibold mb-1">
+              Tralascia {tralasciaModal.ids.length > 1 ? `${tralasciaModal.ids.length} transazioni` : 'transazione'}
+            </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
-              Seleziona o scrivi una motivazione. La transazione resterà visibile in &ldquo;Tralasciati&rdquo;
-              con questa motivazione.
+              Seleziona o scrivi una motivazione. Le trans restano visibili in &ldquo;Tralasciati&rdquo;.
             </p>
             <select
               value={tralasciaModal.motivo}
@@ -1742,6 +1916,41 @@ function StepClassificazione({
                 className="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600 mb-2"
               />
             )}
+
+            {/* Checkbox memorizza-regola */}
+            {tralasciaModal.contropartiUniche.length > 0 && (
+              <div className="mt-3 p-3 rounded bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tralasciaModal.memorizzaRegola}
+                    onChange={e => setTralasciaModal(prev => prev ? { ...prev, memorizzaRegola: e.target.checked } : null)}
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600"
+                  />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-indigo-900 dark:text-indigo-100">
+                      Memorizza la regola
+                    </p>
+                    <p className="text-[11px] text-indigo-700 dark:text-indigo-300 mt-0.5">
+                      Verrà salvata una regola &ldquo;<strong>{tralasciaModal.contropartiUniche.length === 1 ? tralasciaModal.contropartiUniche[0].display : `${tralasciaModal.contropartiUniche.length} controparti`}</strong>&rdquo; con motivo {' '}
+                      <strong>&ldquo;{tralasciaModal.motivo === 'Altro' ? tralasciaModal.custom : tralasciaModal.motivo || '...'}&rdquo;</strong>.
+                      I prossimi periodi: trans con queste controparti vengono tralasciate da sole.
+                    </p>
+                    {tralasciaModal.contropartiUniche.length > 1 && (
+                      <details className="mt-1">
+                        <summary className="text-[11px] text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline">
+                          Vedi le {tralasciaModal.contropartiUniche.length} controparti
+                        </summary>
+                        <ul className="text-[11px] text-indigo-700 dark:text-indigo-300 ml-3 list-disc mt-1">
+                          {tralasciaModal.contropartiUniche.map(c => <li key={c.norm}>{c.display}</li>)}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                </label>
+              </div>
+            )}
+
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => setTralasciaModal(null)} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm">Annulla</button>
               <button onClick={submitTralascia} className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium">Tralascia</button>

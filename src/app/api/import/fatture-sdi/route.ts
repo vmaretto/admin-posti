@@ -62,6 +62,8 @@ export async function POST(request: NextRequest) {
     const key = `${f.tipo}|${f.numero}|${f.data_emissione}`
     if (existingKeys.has(key)) { skipped++; continue }
     existingKeys.add(key)
+    // IMPORTANTE: la colonna `totale` in fatture è GENERATED ALWAYS AS
+    // (imponibile + imposta), NON va passata all'insert.
     toInsert.push({
       tipo: f.tipo,
       tipo_documento: f.tipo_documento,
@@ -74,7 +76,6 @@ export async function POST(request: NextRequest) {
       denominazione_cliente: f.denominazione_cliente,
       imponibile: f.imponibile,
       imposta: f.imposta,
-      totale: f.totale,
       fonte: 'sdi',
       stato_riconciliazione: 'da_riconciliare',
       note: f.sdi_file ? `Sdi/file: ${f.sdi_file}` : null,

@@ -81,6 +81,53 @@ export async function POST(request: NextRequest) {
     .update({ stato_riconciliazione: 'riconciliata' })
     .eq('id', transazioneId)
 
+  // Match intelligence: registra alias e history (best effort, ignora errori
+  // se le tabelle non esistono ancora — l'utente non ha lanciato la migration).
+  try {
+    const { data: fat } = await supabase
+      .from('fatture')
+      .select('numero, totale, tipo, data_emissione, denominazione_cliente, denominazione_fornitore')
+      .eq('id', fatturaId)
+      .maybeSingle()
+    const { data: tr } = await supabase
+      .from('transazioni')
+      .select('importo, data, controparte')
+      .eq('id', transazioneId)
+      .maybeSingle()
+    if (fat && tr) {
+      const soggettoCanonico = fat.tipo === 'emessa' ? fat.denominazione_cliente : fat.denominazione_fornitore
+      // Se la controparte trans è diversa dal soggetto fattura → alias
+      if (soggettoCanonico && tr.controparte && tr.controparte.trim() !== soggettoCanonico.trim()) {
+        const variant = normalizeName(tr.controparte)
+        if (variant && variant !== normalizeName(soggettoCanonico)) {
+          await supabase.from('soggetti_alias').upsert(
+            { variant_normalizzata: variant, soggetto_canonico: soggettoCanonico, source: 'manual' },
+            { onConflict: 'variant_normalizzata,soggetto_canonico' },
+          )
+        }
+      }
+      // Log match_history
+      if (soggettoCanonico && fat.data_emissione && tr.data) {
+        const giorniDiff = Math.round(
+          (new Date(tr.data).getTime() - new Date(fat.data_emissione).getTime()) / (1000 * 60 * 60 * 24),
+        )
+        const importoDiff = Math.abs((fat.totale || 0) - Math.abs(tr.importo || 0))
+        const importoDiffPct = fat.totale ? importoDiff / Math.abs(fat.totale) : 0
+        await supabase.from('match_history').insert({
+          fattura_id: fatturaId,
+          transazione_id: transazioneId,
+          soggetto_canonico: soggettoCanonico,
+          giorni_diff: giorniDiff,
+          importo_diff: importoDiff,
+          importo_diff_pct: importoDiffPct,
+          source: 'manual',
+        })
+      }
+    }
+  } catch {
+    // best effort: se le tabelle non esistono ancora, non blocco il match
+  }
+
   return NextResponse.json({ success: true })
 }
 

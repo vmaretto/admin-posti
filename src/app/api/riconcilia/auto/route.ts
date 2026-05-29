@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
-import { normalizeSubject } from '@/lib/normalize'
 import type { Fattura, Transazione } from '@/lib/types'
+import {
+  MapAliasResolver,
+  computeMatchScore,
+  getSoggetto,
+  tipoCoherent,
+  adaptiveAmountTolerance,
+  SCORE_AUTO_THRESHOLD,
+  SCORE_SUGGEST_THRESHOLD,
+  ScoreBreakdown,
+  FatturaForMatch,
+  TransForMatch,
+  normalizeName,
+} from '@/lib/matching'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,61 +24,22 @@ interface MatchDetail {
   importo_transazione: number
   soggetto: string
   differenza: number
+  score?: number
+  scoreBreakdown?: ScoreBreakdown
+}
+
+interface SuggestionDetail extends MatchDetail {
+  fatture_label?: string[]
 }
 
 interface MatchResult {
   matched: number
+  suggested: number
   details: MatchDetail[]
+  suggestions: SuggestionDetail[]
 }
 
-// -------- helpers --------
-
-// Calcola se la data transazione è nel range valido rispetto alla fattura
-function isDateInRange(dataFattura: string, dataTransazione: string): boolean {
-  const fattura = new Date(dataFattura)
-  const transazione = new Date(dataTransazione)
-  const diffDays = (transazione.getTime() - fattura.getTime()) / (1000 * 60 * 60 * 24)
-  return diffDays >= -30 && diffDays <= 120
-}
-
-// Estrae il soggetto dalla fattura (fornitore per ricevute, cliente per emesse)
-function getSoggetto(fattura: Fattura): string {
-  if (fattura.tipo === 'ricevuta') {
-    return fattura.denominazione_fornitore || ''
-  }
-  return fattura.denominazione_cliente || ''
-}
-
-// Verifica se a è un "alias" di b (uno contiene l'altro come sottostringa o
-// hanno ≥80% di parole significative in comune). Stessa logica usata in
-// /api/soggetti per accoppiare es. "LA PECORA NERA EDITORE DI CARGIANI SIMON"
-// con "La Pecora Nera Editore".
-function isAliasName(a: string, b: string): boolean {
-  const na = normalizeSubject(a)
-  const nb = normalizeSubject(b)
-  if (!na || !nb) return false
-  if (na === nb) return true
-
-  // Sottostringa: il più lungo contiene il più corto (se gap ≥ 8 chars).
-  const [shortStr, longStr] = na.length <= nb.length ? [na, nb] : [nb, na]
-  if (longStr.includes(shortStr) && longStr.length - shortStr.length >= 8) {
-    return true
-  }
-
-  // Overlap parole significative ≥ 80%
-  const wordsA = new Set(na.split(' ').filter(w => w.length > 2))
-  const wordsB = new Set(nb.split(' ').filter(w => w.length > 2))
-  if (wordsA.size === 0 || wordsB.size === 0) return false
-  const small = wordsA.size <= wordsB.size ? wordsA : wordsB
-  const big = small === wordsA ? wordsB : wordsA
-  let common = 0
-  small.forEach(w => { if (big.has(w)) common++ })
-  return common / small.size >= 0.8
-}
-
-// Fetch paginato per superare il limite Supabase di 1000 righe per query.
-// `builder` deve restituire, ogni volta che viene chiamato, una nuova query
-// pronta per ricevere `.range(from, to)`.
+// ----- Fetch paginato -----
 async function fetchAllPaginated<T = unknown>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   builder: () => any,
@@ -86,17 +59,21 @@ async function fetchAllPaginated<T = unknown>(
   return all
 }
 
-// -------- core logic --------
+function parseRange(request: NextRequest) {
+  const { searchParams } = new URL(request.url)
+  const from = searchParams.get('from')
+  const to = searchParams.get('to')
+  return from && to ? { from, to } : undefined
+}
 
-// Trova tutti i match automatici, opzionalmente filtrando per periodo
-// (le trans devono cadere nel range; le fatture sono volutamente prese
-// senza filtro perché un pagamento può riferirsi a una fattura più vecchia,
-// e il range date-fattura↔data-trans di −30/+120gg è già una guardia naturale).
+// ============================================================================
+// Core: trova match con il nuovo scoring system
+// ============================================================================
 async function findAutoMatches(
   supabase: ReturnType<typeof createServerClient>,
   range?: { from: string; to: string },
-): Promise<MatchDetail[]> {
-  // Carica TUTTE le fatture da riconciliare (paginate per superare i 1000)
+): Promise<{ matches: MatchDetail[]; suggestions: SuggestionDetail[] }> {
+  // 1) Carica fatture e trans da riconciliare
   const fatture: Fattura[] = await fetchAllPaginated<Fattura>(() =>
     supabase
       .from('fatture')
@@ -106,123 +83,147 @@ async function findAutoMatches(
       .order('created_at', { ascending: true }),
   )
 
-  // Carica le transazioni da riconciliare. Se c'è un periodo, filtro sulle
-  // trans (è il "campo di azione" del wizard).
   const transazioni: Transazione[] = await fetchAllPaginated<Transazione>(() => {
     let q = supabase
       .from('transazioni')
       .select('*')
       .eq('stato_riconciliazione', 'da_riconciliare')
       .order('created_at', { ascending: true })
-    if (range) {
-      q = q.gte('data', range.from).lte('data', range.to)
-    }
+    if (range) q = q.gte('data', range.from).lte('data', range.to)
     return q
   })
 
   if (!fatture.length || !transazioni.length) {
-    return []
+    return { matches: [], suggestions: [] }
   }
 
-  const matches: MatchDetail[] = []
-  const usedTransazioni = new Set<string>()
-  const usedFatture = new Set<string>()
+  // 2) Carica alias table (con fallback se non esiste ancora)
+  const { data: aliasRows } = await supabase
+    .from('soggetti_alias')
+    .select('variant_normalizzata, soggetto_canonico')
+  const aliasResolver = new MapAliasResolver(aliasRows || [])
 
-  // Raggruppa fatture per soggetto normalizzato (per il match esatto rapido).
+  // 3) Pass 1 — 1:1 con scoring
+  const matches: MatchDetail[] = []
+  const suggestions: SuggestionDetail[] = []
+  const usedFatture = new Set<string>()
+  const usedTransazioni = new Set<string>()
+
+  // Per ogni transazione, calcola lo score con tutte le fatture compatibili
+  // sul tipo, e prendi la migliore.
+  for (const trans of transazioni) {
+    if (usedTransazioni.has(trans.id)) continue
+    if (!trans.controparte && !trans.descrizione) continue
+
+    let bestFat: Fattura | null = null
+    let bestScore: ScoreBreakdown | null = null
+
+    for (const f of fatture) {
+      if (usedFatture.has(f.id)) continue
+      if (!tipoCoherent(f as FatturaForMatch, trans as TransForMatch)) continue
+      // Skip se la trans è chiaramente fuori range data per questa fattura
+      const days = (new Date(trans.data).getTime() - new Date(f.data_emissione).getTime()) / (1000 * 60 * 60 * 24)
+      if (days < -60 || days > 240) continue // pre-filter generoso
+
+      const breakdown = computeMatchScore(f as FatturaForMatch, trans as TransForMatch, aliasResolver)
+      if (!bestScore || breakdown.totalScore > bestScore.totalScore) {
+        bestScore = breakdown
+        bestFat = f
+      }
+    }
+
+    if (!bestFat || !bestScore) continue
+
+    if (bestScore.totalScore >= SCORE_AUTO_THRESHOLD) {
+      matches.push({
+        fattura_ids: [bestFat.id],
+        transazione_id: trans.id,
+        importo_fatture: bestFat.totale,
+        importo_transazione: Math.abs(trans.importo),
+        soggetto: getSoggetto(bestFat as FatturaForMatch),
+        differenza: Math.abs(bestFat.totale - Math.abs(trans.importo)),
+        score: Math.round(bestScore.totalScore),
+        scoreBreakdown: bestScore,
+      })
+      usedFatture.add(bestFat.id)
+      usedTransazioni.add(trans.id)
+    } else if (bestScore.totalScore >= SCORE_SUGGEST_THRESHOLD) {
+      // Salva come suggerimento — NON modifica DB
+      suggestions.push({
+        fattura_ids: [bestFat.id],
+        transazione_id: trans.id,
+        importo_fatture: bestFat.totale,
+        importo_transazione: Math.abs(trans.importo),
+        soggetto: getSoggetto(bestFat as FatturaForMatch),
+        differenza: Math.abs(bestFat.totale - Math.abs(trans.importo)),
+        score: Math.round(bestScore.totalScore),
+        scoreBreakdown: bestScore,
+        fatture_label: [bestFat.numero],
+      })
+    }
+  }
+
+  // 4) Pass 2 — N:1 sui residui (riusa la logica precedente con tolleranza adattiva)
   const fattureBySubject = new Map<string, Fattura[]>()
   for (const f of fatture) {
-    const soggetto = getSoggetto(f)
+    if (usedFatture.has(f.id)) continue
+    const soggetto = getSoggetto(f as FatturaForMatch)
     if (!soggetto) continue
-    const normalized = normalizeSubject(soggetto)
-    if (!normalized) continue
-    const list = fattureBySubject.get(normalized) || []
+    const key = normalizeName(soggetto)
+    if (!key) continue
+    const list = fattureBySubject.get(key) || []
     list.push(f)
-    fattureBySubject.set(normalized, list)
+    fattureBySubject.set(key, list)
   }
 
-  // Per ogni transazione, cerca match (esatto + alias come fallback).
   for (const trans of transazioni) {
     if (usedTransazioni.has(trans.id)) continue
     if (!trans.controparte) continue
-
-    const normalizedControparte = normalizeSubject(trans.controparte)
+    const normalizedControparte = normalizeName(trans.controparte)
     if (!normalizedControparte) continue
 
-    // 1) Match esatto sul nome normalizzato
-    let fattureCandidate: Fattura[] = fattureBySubject.get(normalizedControparte) || []
-
-    // 2) Fallback alias: scorri le chiavi del map e prendi quelle "alias" della
-    //    controparte. Unisci tutto in un unico pool di candidate.
-    if (fattureCandidate.length === 0) {
-      const aliasPool: Fattura[] = []
-      for (const [key, list] of fattureBySubject.entries()) {
-        if (key === normalizedControparte) continue
-        // Controlla l'alias sul nome del soggetto della prima fattura (display
-        // originale) per coerenza con la logica di /api/soggetti.
-        const sampleSoggetto = getSoggetto(list[0])
-        if (isAliasName(trans.controparte, sampleSoggetto)) {
-          aliasPool.push(...list)
-        }
+    let pool: Fattura[] = fattureBySubject.get(normalizedControparte) || []
+    if (pool.length < 2) {
+      // Prova alias resolver per trovare il soggetto canonico
+      const canonical = aliasResolver.resolve(trans.controparte)
+      if (canonical) {
+        const canonKey = normalizeName(canonical)
+        const poolCanonical = fattureBySubject.get(canonKey) || []
+        if (poolCanonical.length >= 2) pool = poolCanonical
       }
-      fattureCandidate = aliasPool
     }
+    if (pool.length < 2) continue
 
-    if (!fattureCandidate.length) continue
+    // Filtra per tipo + finestra date generosa
+    const fattureValide = pool.filter(f => {
+      if (usedFatture.has(f.id)) return false
+      if (!tipoCoherent(f as FatturaForMatch, trans as TransForMatch)) return false
+      const days = (new Date(trans.data).getTime() - new Date(f.data_emissione).getTime()) / (1000 * 60 * 60 * 24)
+      return days >= -30 && days <= 120
+    })
+    if (fattureValide.length < 2) continue
 
-    // Filtra fatture non ancora usate, con data e tipo compatibili.
-    const fattureValide = fattureCandidate.filter(
-      f =>
-        !usedFatture.has(f.id) &&
-        isDateInRange(f.data_emissione, trans.data) &&
-        ((f.tipo === 'ricevuta' && trans.tipo === 'uscita') ||
-          (f.tipo === 'emessa' && trans.tipo === 'entrata')),
-    )
-
-    if (!fattureValide.length) continue
-
-    // Match 1:1 (unico candidato compatibile sull'importo)
-    const candidatiImporto = fattureValide.filter(
-      f => Math.abs(f.totale - Math.abs(trans.importo)) <= 2,
-    )
-
-    if (candidatiImporto.length === 1) {
-      const match1to1 = candidatiImporto[0]
-      matches.push({
-        fattura_ids: [match1to1.id],
-        transazione_id: trans.id,
-        importo_fatture: match1to1.totale,
-        importo_transazione: Math.abs(trans.importo),
-        soggetto: getSoggetto(match1to1),
-        differenza: Math.abs(match1to1.totale - Math.abs(trans.importo)),
-      })
-      usedTransazioni.add(trans.id)
-      usedFatture.add(match1to1.id)
-      continue
-    }
-
-    // Match N:1 — combinazioni di fatture la cui somma ≈ importo transazione.
+    // Cerca combinazione che somma ~ importo trans (tolleranza adattiva sulla somma totale)
     const sorted = [...fattureValide].sort(
       (a, b) => new Date(a.data_emissione).getTime() - new Date(b.data_emissione).getTime(),
     )
-
     const maxFatture = Math.min(sorted.length, 10)
     let found = false
-
-    for (let mask = 1; mask < 1 << maxFatture && !found; mask++) {
+    for (let mask = 1; mask < (1 << maxFatture) && !found; mask++) {
       const combo: Fattura[] = []
       for (let i = 0; i < maxFatture; i++) {
         if (mask & (1 << i)) combo.push(sorted[i])
       }
       if (combo.length < 2) continue
-
       const somma = combo.reduce((acc, f) => acc + f.totale, 0)
-      if (Math.abs(somma - Math.abs(trans.importo)) <= 2) {
+      const tolerance = adaptiveAmountTolerance(somma)
+      if (Math.abs(somma - Math.abs(trans.importo)) <= tolerance) {
         matches.push({
           fattura_ids: combo.map(f => f.id),
           transazione_id: trans.id,
           importo_fatture: somma,
           importo_transazione: Math.abs(trans.importo),
-          soggetto: getSoggetto(combo[0]),
+          soggetto: getSoggetto(combo[0] as FatturaForMatch),
           differenza: Math.abs(somma - Math.abs(trans.importo)),
         })
         usedTransazioni.add(trans.id)
@@ -232,34 +233,23 @@ async function findAutoMatches(
     }
   }
 
-  return matches
+  return { matches, suggestions }
 }
 
-// -------- HTTP handlers --------
+// ============================================================================
+// HTTP handlers
+// ============================================================================
 
-function parseRange(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const from = searchParams.get('from')
-  const to = searchParams.get('to')
-  return from && to ? { from, to } : undefined
-}
-
-// GET: Preview dei match automatici
+// GET: Preview match auto e suggerimenti (non scrive DB)
 export async function GET(request: NextRequest) {
   try {
     const supabase = createServerClient()
-    const matches = await findAutoMatches(supabase, parseRange(request))
-
+    const { matches, suggestions } = await findAutoMatches(supabase, parseRange(request))
     return NextResponse.json({
       matched: matches.length,
-      details: matches.map(m => ({
-        fattura_ids: m.fattura_ids,
-        transazione_id: m.transazione_id,
-        importo_fatture: m.importo_fatture,
-        importo_transazione: m.importo_transazione,
-        soggetto: m.soggetto,
-        differenza: m.differenza,
-      })),
+      suggested: suggestions.length,
+      details: matches,
+      suggestions,
     } as MatchResult)
   } catch (error) {
     console.error('Errore auto-match preview:', error)
@@ -270,18 +260,18 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST: Esegue i match automatici
+// POST: Esegue match >= SCORE_AUTO_THRESHOLD. Restituisce anche i suggestions.
 export async function POST(request: NextRequest) {
   try {
     const supabase = createServerClient()
-    const matches = await findAutoMatches(supabase, parseRange(request))
+    const { matches, suggestions } = await findAutoMatches(supabase, parseRange(request))
 
     if (!matches.length) {
-      return NextResponse.json({ matched: 0, details: [] })
+      return NextResponse.json({ matched: 0, suggested: suggestions.length, details: [], suggestions })
     }
 
     for (const match of matches) {
-      // Update fatture: tutte le N fatture del match puntano alla stessa transazione
+      // Aggiorna fatture: tutte le N fatture puntano alla stessa trans
       const { error: errFatture } = await supabase
         .from('fatture')
         .update({
@@ -295,8 +285,7 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      // Inserisci in riconciliazioni (una riga per fattura, transazione condivisa).
-      // Usa upsert per essere idempotente in caso di rilancio.
+      // Inserisci righe riconciliazioni (idempotente)
       const rows = match.fattura_ids.map(fid => ({
         fattura_id: fid,
         transazione_id: match.transazione_id,
@@ -304,31 +293,36 @@ export async function POST(request: NextRequest) {
       const { error: errRic } = await supabase
         .from('riconciliazioni')
         .upsert(rows, { onConflict: 'fattura_id' })
-      if (errRic) {
-        console.error(`Errore upsert riconciliazioni ${match.fattura_ids}:`, errRic)
-      }
+      if (errRic) console.error(`Errore upsert riconciliazioni:`, errRic)
 
-      // Update transazione
-      const { error: errTrans } = await supabase
+      // Update trans
+      await supabase
         .from('transazioni')
         .update({ stato_riconciliazione: 'riconciliata' })
         .eq('id', match.transazione_id)
 
-      if (errTrans) {
-        console.error(`Errore update transazione ${match.transazione_id}:`, errTrans)
+      // Log match_history (per push 2 learning)
+      try {
+        await supabase.from('match_history').insert(
+          match.fattura_ids.map(fid => ({
+            fattura_id: fid,
+            transazione_id: match.transazione_id,
+            soggetto_canonico: match.soggetto,
+            importo_diff: match.differenza,
+            score: match.score || null,
+            source: 'auto',
+          })),
+        )
+      } catch (e) {
+        // tabella potrebbe non esistere ancora, ignoro
       }
     }
 
     return NextResponse.json({
       matched: matches.length,
-      details: matches.map(m => ({
-        fattura_ids: m.fattura_ids,
-        transazione_id: m.transazione_id,
-        importo_fatture: m.importo_fatture,
-        importo_transazione: m.importo_transazione,
-        soggetto: m.soggetto,
-        differenza: m.differenza,
-      })),
+      suggested: suggestions.length,
+      details: matches,
+      suggestions,
     } as MatchResult)
   } catch (error) {
     console.error('Errore auto-match:', error)

@@ -165,6 +165,26 @@ export async function POST(request: NextRequest) {
     .from('soggetti_cluster')
     .upsert({ nome_normalizzato: toNorm, varianti: [toClean] }, { onConflict: 'nome_normalizzato' })
 
+  // Match intelligence: registra alias persistente — ogni chiave sorgente
+  // diventa una variant del soggetto canonico target. Così il futuro auto-match
+  // riconosce immediatamente "ABC Corp" come variant di "ABC Corporation Ltd".
+  try {
+    const aliasRows = Array.from(keysToRemove)
+      .filter(k => k && k !== toNorm)
+      .map(variant => ({
+        variant_normalizzata: variant,
+        soggetto_canonico: toClean,
+        source: 'merge' as const,
+      }))
+    if (aliasRows.length > 0) {
+      await supabase
+        .from('soggetti_alias')
+        .upsert(aliasRows, { onConflict: 'variant_normalizzata,soggetto_canonico' })
+    }
+  } catch {
+    // best effort: tabella potrebbe non esistere ancora
+  }
+
   return NextResponse.json({
     success: true,
     fatture_aggiornate: fattureMerged,

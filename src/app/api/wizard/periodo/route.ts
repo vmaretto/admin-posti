@@ -43,7 +43,9 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await q.maybeSingle()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!data) return NextResponse.json({ found: false }, { status: 404 })
+  // Anche se la riga non esiste, torno 200 per evitare rumore nella console.
+  // Il client distingue via il flag `found`.
+  if (!data) return NextResponse.json({ found: false })
   return NextResponse.json({ found: true, periodo: data })
 }
 

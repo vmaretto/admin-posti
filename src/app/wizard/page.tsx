@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   Calendar, Check, ChevronRight, Wand2, ArrowRight, RefreshCw, AlertTriangle,
-  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X,
+  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X, Sparkles,
 } from 'lucide-react'
 import {
   parsePeriodo, formatPeriodoSlug, defaultPeriodoSlug, PeriodoTipo, MESI_LABELS,
@@ -131,11 +131,11 @@ function WizardInner() {
     if (coord.mese != null) params.set('mese', String(coord.mese))
     try {
       const res = await fetch(`/api/wizard/periodo?${params.toString()}`)
-      if (res.status === 404) {
+      const data = await res.json()
+      if (!res.ok || data?.found === false) {
         setRow(null)
         return
       }
-      const data = await res.json()
       setRow(data.periodo)
     } catch (e) {
       console.error(e)
@@ -204,9 +204,15 @@ function WizardInner() {
     }
   }
 
+  // Risultato dell'ultimo auto-match (per il report Step 3)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [lastMatchResult, setLastMatchResult] = useState<any>(null)
+  const [llmRunning, setLlmRunning] = useState(false)
+
   async function lanciaAutoMatch() {
     if (!periodo.from || !periodo.to) return
     setLoading(true)
+    setLastMatchResult(null)
     try {
       const res = await fetch(
         `/api/riconcilia/auto?from=${periodo.from}&to=${periodo.to}`,
@@ -214,12 +220,43 @@ function WizardInner() {
       )
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', `Match automatici: ${data.matched || 0}`)
+      setLastMatchResult(data)
+      const m = data.matched || 0
+      const s = data.suggested || 0
+      showFeedback('ok', `Auto-match: ${m} applicati · ${s} suggerimenti incerti`)
       await reloadStats()
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function disambiguaConAI() {
+    if (!lastMatchResult?.suggestions?.length) return
+    setLlmRunning(true)
+    try {
+      const res = await fetch('/api/riconcilia/llm-disambiguate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suggestions: lastMatchResult.suggestions, apply: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (res.status === 503) {
+          showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
+        } else {
+          throw new Error(data.error || 'Errore')
+        }
+        return
+      }
+      showFeedback('ok', `AI ha valutato ${data.decisions?.length || 0} candidati, applicati ${data.applied || 0}`)
+      setLastMatchResult({ ...lastMatchResult, suggestions: [], applied_by_llm: data.applied || 0 })
+      await reloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore LLM')
+    } finally {
+      setLlmRunning(false)
     }
   }
 
@@ -454,7 +491,10 @@ function WizardInner() {
               periodo={periodo}
               stats={stats}
               loading={loading}
+              lastResult={lastMatchResult}
+              llmRunning={llmRunning}
               onAutoMatch={lanciaAutoMatch}
+              onDisambiguaAI={disambiguaConAI}
               onNext={() => setStep(4)}
               onBack={() => setStep(2)}
             />
@@ -895,21 +935,30 @@ function FatturaTile({
 }
 
 function StepAutoMatch({
-  periodo, stats, loading, onAutoMatch, onNext, onBack,
+  periodo, stats, loading, lastResult, llmRunning, onAutoMatch, onDisambiguaAI, onNext, onBack,
 }: {
   periodo: ReturnType<typeof parsePeriodo>
   stats: WizardStats | null
   loading: boolean
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  lastResult: any
+  llmRunning: boolean
   onAutoMatch: () => void
+  onDisambiguaAI: () => void
   onNext: () => void
   onBack: () => void
 }) {
+  const matched = lastResult?.matched ?? null
+  const suggested = lastResult?.suggested ?? 0
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const suggestions: any[] = Array.isArray(lastResult?.suggestions) ? lastResult.suggestions : []
+
   return (
     <div>
       <h2 className="text-xl font-bold mb-1">Step 3 — Auto-match</h2>
       <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
-        Lancio l&apos;auto-match limitato al periodo {periodo.label}. Trans abbinate a fatture
-        con stesso soggetto (anche alias), importo entro 2€, data nel range −30/+120 gg.
+        Sistema di scoring 0-100 (soggetto 40 · numero fattura nella causale 30 · importo 20 · data 10).
+        Auto-applico se score ≥ 80, classifico come &ldquo;suggerimento&rdquo; tra 50 e 79.
       </p>
       <div className="bg-gray-50 dark:bg-gray-900 rounded p-4 mb-4">
         <p className="text-sm">
@@ -922,11 +971,96 @@ function StepAutoMatch({
       <button
         onClick={onAutoMatch}
         disabled={loading || !periodo.from}
-        className="mb-6 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded"
+        className="mb-4 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded"
       >
         {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-        Lancia Match automatici sul periodo
+        {loading ? 'Sto cercando i match…' : 'Lancia Match automatici sul periodo'}
       </button>
+
+      {/* Report dopo l'esecuzione */}
+      {lastResult && (
+        <div className="mb-6 border border-indigo-200 dark:border-indigo-800 rounded-lg overflow-hidden">
+          <div className="bg-indigo-50 dark:bg-indigo-950 px-4 py-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300">Applicati automaticamente</p>
+              <p className="text-2xl font-bold text-emerald-900 dark:text-emerald-100">{matched}</p>
+              <p className="text-[10px] text-emerald-700 dark:text-emerald-400">score ≥ 80</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-amber-700 dark:text-amber-300">Suggerimenti incerti</p>
+              <p className="text-2xl font-bold text-amber-900 dark:text-amber-100">{suggested}</p>
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">score 50-79 (AI ne valuta la coincidenza)</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-gray-700 dark:text-gray-300">Analizzato</p>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
+                Tutte le trans di {periodo.label} vs fatture da riconciliare.
+              </p>
+            </div>
+          </div>
+
+          {/* Suggerimenti con score breakdown */}
+          {suggestions.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 px-4 py-3 border-t border-indigo-200 dark:border-indigo-800">
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                  Top suggerimenti (mostrati {Math.min(suggestions.length, 10)} di {suggestions.length})
+                </p>
+                <button
+                  onClick={onDisambiguaAI}
+                  disabled={llmRunning}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white"
+                >
+                  {llmRunning ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                  {llmRunning ? 'AI sta valutando…' : 'Disambigua con AI'}
+                </button>
+              </div>
+              <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                {suggestions.slice(0, 10).map((s, idx) => {
+                  const br = s.scoreBreakdown
+                  return (
+                    <div key={idx} className="text-xs bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-medium text-gray-900 dark:text-white">
+                          {s.fatture_label?.[0] || s.fattura_id?.slice(0, 8)} ↔ {s.soggetto}
+                        </span>
+                        <span className="font-bold text-indigo-700 dark:text-indigo-300">
+                          {s.score}/100
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1">
+                        {formatCurrency(s.importo_fatture)} ↔ {formatCurrency(s.importo_transazione)} (diff {formatCurrency(s.differenza)})
+                      </p>
+                      {br && (
+                        <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1">
+                          soggetto {Math.round(br.subjectScore * 40)} ({br.subjectReason}) ·
+                          riferimento {Math.round(br.referenceScore * 30)} ·
+                          importo {Math.round(br.amountScore * 20)} ·
+                          data {Math.round(br.dateScore * 10)}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Nessun match e nessun suggerimento */}
+          {matched === 0 && suggested === 0 && (
+            <div className="bg-yellow-50 dark:bg-yellow-950 px-4 py-3 border-t border-yellow-200 dark:border-yellow-800 text-sm text-yellow-900 dark:text-yellow-100">
+              <p className="font-semibold mb-1">⚠ Nessuna coppia raggiunge la soglia minima (score 50).</p>
+              <p className="text-xs">
+                Cause possibili: i nomi nelle controparti delle trans non assomigliano abbastanza a quelli sulle fatture
+                (manca la mappatura alias), oppure gli importi differiscono troppo. Suggerimento: vai in <strong>/soggetti</strong>,
+                accorpa manualmente i casi evidenti (es. &ldquo;Bonifico da X&rdquo; ↔ fattura emessa &ldquo;X srl&rdquo;),
+                e rilancia l&apos;auto-match — la prossima volta il sistema riconoscerà gli alias.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex justify-between">
         <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>
         <button onClick={onNext} className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium inline-flex items-center gap-1">

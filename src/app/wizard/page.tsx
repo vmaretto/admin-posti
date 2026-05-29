@@ -260,6 +260,57 @@ function WizardInner() {
     }
   }
 
+  // Accetta manualmente un suggerimento (lo applica al DB)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function accettaSuggerimento(s: any) {
+    if (!s?.fattura_id || !s?.transazione_id) return
+    try {
+      const res = await fetch('/api/riconcilia', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fatturaId: s.fattura_id,
+          transazioneId: s.transazione_id,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', `Match accettato: ${s.fatturaSoggetto || s.soggetto}`)
+      // Rimuovi dalla lista suggerimenti e aggiorna stats
+      if (lastMatchResult) {
+        const newSugg = (lastMatchResult.suggestions || []).filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (x: any) => x.transazione_id !== s.transazione_id || x.fattura_id !== s.fattura_id,
+        )
+        setLastMatchResult({
+          ...lastMatchResult,
+          suggestions: newSugg,
+          suggested: newSugg.length,
+          matched: (lastMatchResult.matched || 0) + 1,
+        })
+      }
+      await reloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  // Rifiuta un suggerimento (lo rimuove dalla lista, no DB)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function rifiutaSuggerimento(s: any) {
+    if (!lastMatchResult) return
+    const newSugg = (lastMatchResult.suggestions || []).filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (x: any) => x.transazione_id !== s.transazione_id || x.fattura_id !== s.fattura_id,
+    )
+    setLastMatchResult({
+      ...lastMatchResult,
+      suggestions: newSugg,
+      suggested: newSugg.length,
+    })
+    showFeedback('ok', 'Suggerimento rifiutato')
+  }
+
   // Helper per cambiare periodo dal picker built-in
   function changePeriodo(newSlug: string) {
     const params = new URLSearchParams(searchParams.toString())
@@ -495,6 +546,8 @@ function WizardInner() {
               llmRunning={llmRunning}
               onAutoMatch={lanciaAutoMatch}
               onDisambiguaAI={disambiguaConAI}
+              onAcceptSuggestion={accettaSuggerimento}
+              onRejectSuggestion={rifiutaSuggerimento}
               onNext={() => setStep(4)}
               onBack={() => setStep(2)}
             />
@@ -963,7 +1016,7 @@ function formatDate(d: string | null | undefined): string {
 }
 
 function StepAutoMatch({
-  periodo, stats, loading, lastResult, llmRunning, onAutoMatch, onDisambiguaAI, onNext, onBack,
+  periodo, stats, loading, lastResult, llmRunning, onAutoMatch, onDisambiguaAI, onAcceptSuggestion, onRejectSuggestion, onNext, onBack,
 }: {
   periodo: ReturnType<typeof parsePeriodo>
   stats: WizardStats | null
@@ -973,6 +1026,10 @@ function StepAutoMatch({
   llmRunning: boolean
   onAutoMatch: () => void
   onDisambiguaAI: () => void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onAcceptSuggestion: (s: any) => void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onRejectSuggestion: (s: any) => void
   onNext: () => void
   onBack: () => void
 }) {
@@ -1147,6 +1204,23 @@ function StepAutoMatch({
                           Motivo soggetto: {br.subjectReason}
                         </p>
                       )}
+                      {/* Bottoni Accetta / Rifiuta singolo suggerimento */}
+                      <div className="flex justify-end gap-2 mt-2">
+                        <button
+                          onClick={() => onRejectSuggestion(s)}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded text-xs font-medium bg-red-100 hover:bg-red-200 dark:bg-red-900 dark:hover:bg-red-800 text-red-700 dark:text-red-200"
+                          title="Rimuovi dalla lista (non scrive in DB)"
+                        >
+                          <X className="h-3 w-3" /> Rifiuta
+                        </button>
+                        <button
+                          onClick={() => onAcceptSuggestion(s)}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
+                          title="Applica il match al DB"
+                        >
+                          <Check className="h-3 w-3" /> Accetta
+                        </button>
+                      </div>
                     </div>
                   )
                 })}

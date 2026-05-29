@@ -1,110 +1,106 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
+import { parseSdiCSV, type SdiTipo } from '@/lib/parsers/fatture-sdi'
 
 export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
 
-// Parse Italian SDI CSV format
-function parseSDIAmount(value: string): number {
-  // Format: "000000010000,00" -> 10000.00
-  const cleaned = value.replace(/['"]/g, '').trim()
-  const numeric = cleaned.replace(/^0+/, '') || '0'
-  return parseFloat(numeric.replace(',', '.'))
-}
-
-function parseSDIDate(value: string): string {
-  // Format: DD/MM/YYYY -> YYYY-MM-DD
-  const cleaned = value.replace(/['"]/g, '').trim()
-  const [day, month, year] = cleaned.split('/')
-  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
-}
-
-function cleanString(value: string): string {
-  return value.replace(/^['"]|['"]$/g, '').trim()
-}
-
+// POST /api/import/fatture-sdi
+// Body JSON: { csvContent: string, tipo: 'emessa' | 'ricevuta' }
+//
+// Fix rispetto alla precedente versione:
+//  - Niente più upsert con onConflict su constraint inesistente.
+//  - Dedup esplicito su (tipo, numero, data_emissione, fonte='sdi')
+//    limitato al periodo del file (no scan dell'intero DB).
+//  - Calcolo `totale` = imponibile + imposta (campo che mancava!).
+//  - Gestione \\r\\n e apici singoli wrappanti i valori (es. "'F-2026-20'").
+//  - Risposta allineata agli altri import: imported, skipped, parsed, periodo.
 export async function POST(request: NextRequest) {
+  let body: { csvContent?: string; tipo?: SdiTipo }
   try {
-    const { csvContent, tipo } = await request.json()
-    
-    if (!csvContent || !tipo) {
-      return NextResponse.json({ error: 'Missing csvContent or tipo' }, { status: 400 })
-    }
-
-    const supabase = createServerClient()
-    const lines = csvContent.split('\n').filter((l: string) => l.trim())
-    
-    if (lines.length < 2) {
-      return NextResponse.json({ error: 'CSV vuoto o invalido' }, { status: 400 })
-    }
-
-    const headers = lines[0].split(';').map((h: string) => cleanString(h).toLowerCase())
-    const fatture = []
-    const errors = []
-
-    for (let i = 1; i < lines.length; i++) {
-      try {
-        const values = lines[i].split(';')
-        const row: Record<string, string> = {}
-        
-        headers.forEach((h: string, idx: number) => {
-          row[h] = values[idx] || ''
-        })
-
-        const tipoDoc = cleanString(row['tipo documento'] || '').toLowerCase()
-        const isNotaCredito = tipoDoc.includes('credito')
-
-        const fattura = {
-          tipo: tipo as 'emessa' | 'ricevuta',
-          tipo_documento: isNotaCredito ? 'nota_credito' : 'fattura',
-          numero: cleanString(row['numero fattura / documento'] || row['numero fattura'] || ''),
-          data_emissione: parseSDIDate(row['data emissione'] || ''),
-          data_ricezione: row['data consegna/presa visione'] || row['data ricezione'] 
-            ? parseSDIDate(row['data consegna/presa visione'] || row['data ricezione']) 
-            : null,
-          piva_fornitore: cleanString(row['partita iva fornitore'] || ''),
-          denominazione_fornitore: cleanString(row['denominazione fornitore'] || ''),
-          piva_cliente: cleanString(row['partita iva cliente'] || ''),
-          denominazione_cliente: cleanString(row['denominazione cliente'] || ''),
-          imponibile: parseSDIAmount(row['imponibile/importo (totale in euro)'] || '0'),
-          imposta: parseSDIAmount(row['imposta (totale in euro)'] || '0'),
-          fonte: 'sdi',
-          stato_riconciliazione: 'da_riconciliare'
-        }
-
-        if (fattura.numero && fattura.data_emissione) {
-          fatture.push(fattura)
-        }
-      } catch (err) {
-        errors.push({ line: i + 1, error: String(err) })
-      }
-    }
-
-    if (fatture.length === 0) {
-      return NextResponse.json({ error: 'Nessuna fattura valida trovata', errors }, { status: 400 })
-    }
-
-    // Upsert fatture
-    const { data, error } = await supabase
-      .from('fatture')
-      .upsert(fatture, { 
-        onConflict: 'numero,data_emissione,tipo',
-        ignoreDuplicates: false 
-      })
-      .select()
-
-    if (error) {
-      console.error('Supabase error:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json({ 
-      success: true, 
-      imported: fatture.length,
-      errors: errors.length > 0 ? errors : undefined
-    })
-
-  } catch (error) {
-    console.error('Import error:', error)
-    return NextResponse.json({ error: String(error) }, { status: 500 })
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'JSON invalido' }, { status: 400 })
   }
+  if (!body?.csvContent || !body?.tipo) {
+    return NextResponse.json({ error: 'csvContent e tipo richiesti' }, { status: 400 })
+  }
+  if (body.tipo !== 'emessa' && body.tipo !== 'ricevuta') {
+    return NextResponse.json({ error: 'tipo deve essere "emessa" o "ricevuta"' }, { status: 400 })
+  }
+
+  const parsed = parseSdiCSV(body.csvContent, body.tipo)
+  if (parsed.fatture.length === 0) {
+    return NextResponse.json({
+      error: 'Nessuna fattura riconosciuta nel CSV SDI.',
+      warnings: parsed.warnings,
+      hint: 'Verifica che sia il CSV scaricato dal cassetto fiscale.',
+    }, { status: 400 })
+  }
+
+  const supabase = createServerClient()
+
+  // Dedup esplicito: cerco fatture esistenti con stesso (tipo, numero, data_emissione)
+  // dentro al periodo del file.
+  let existingKeys = new Set<string>()
+  if (parsed.periodoFrom && parsed.periodoTo) {
+    const { data: existing } = await supabase
+      .from('fatture')
+      .select('numero, data_emissione, tipo')
+      .eq('tipo', body.tipo)
+      .gte('data_emissione', parsed.periodoFrom)
+      .lte('data_emissione', parsed.periodoTo)
+      .range(0, 9999)
+    existingKeys = new Set(
+      (existing || []).map(f => `${f.tipo}|${f.numero}|${f.data_emissione}`),
+    )
+  }
+
+  const toInsert: Record<string, unknown>[] = []
+  let skipped = 0
+  for (const f of parsed.fatture) {
+    const key = `${f.tipo}|${f.numero}|${f.data_emissione}`
+    if (existingKeys.has(key)) { skipped++; continue }
+    existingKeys.add(key)
+    toInsert.push({
+      tipo: f.tipo,
+      tipo_documento: f.tipo_documento,
+      numero: f.numero,
+      data_emissione: f.data_emissione,
+      data_ricezione: f.data_ricezione,
+      piva_fornitore: f.piva_fornitore,
+      denominazione_fornitore: f.denominazione_fornitore,
+      piva_cliente: f.piva_cliente,
+      denominazione_cliente: f.denominazione_cliente,
+      imponibile: f.imponibile,
+      imposta: f.imposta,
+      totale: f.totale,
+      fonte: 'sdi',
+      stato_riconciliazione: 'da_riconciliare',
+      note: f.sdi_file ? `Sdi/file: ${f.sdi_file}` : null,
+    })
+  }
+
+  let inserted = 0
+  if (toInsert.length > 0) {
+    const { error } = await supabase.from('fatture').insert(toInsert)
+    if (error) {
+      return NextResponse.json({
+        error: `Errore insert: ${error.message}`,
+        parsed: parsed.fatture.length,
+        skipped,
+      }, { status: 500 })
+    }
+    inserted = toInsert.length
+  }
+
+  return NextResponse.json({
+    success: true,
+    imported: inserted,
+    skipped,
+    parsed: parsed.fatture.length,
+    periodo: { from: parsed.periodoFrom, to: parsed.periodoTo },
+    totali: { totale: parsed.totale },
+    warnings: parsed.warnings,
+  })
 }

@@ -934,6 +934,34 @@ function FatturaTile({
   )
 }
 
+// ---- Tipi per gli abbinamenti del periodo ----
+interface Abbinamento {
+  fattura: {
+    id: string
+    numero: string
+    tipo: string
+    totale: number
+    data: string
+    soggetto: string | null
+  }
+  trans: {
+    id: string
+    importo: number
+    tipo: string
+    data: string
+    conto: string
+    controparte: string | null
+    descrizione: string | null
+    riferimento: string | null
+  } | null
+  differenza: number | null
+}
+
+function formatDate(d: string | null | undefined): string {
+  if (!d) return '—'
+  return new Date(d).toLocaleDateString('it-IT')
+}
+
 function StepAutoMatch({
   periodo, stats, loading, lastResult, llmRunning, onAutoMatch, onDisambiguaAI, onNext, onBack,
 }: {
@@ -952,14 +980,46 @@ function StepAutoMatch({
   const suggested = lastResult?.suggested ?? 0
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const suggestions: any[] = Array.isArray(lastResult?.suggestions) ? lastResult.suggestions : []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const appliedByLLM: any[] = Array.isArray(lastResult?.appliedDetails) ? lastResult.appliedDetails : []
+
+  const [abbinamenti, setAbbinamenti] = useState<Abbinamento[]>([])
+  const [loadingAbbinamenti, setLoadingAbbinamenti] = useState(false)
+  const [showAbbinamenti, setShowAbbinamenti] = useState(false)
+
+  async function loadAbbinamenti() {
+    if (!periodo.from || !periodo.to) return
+    setLoadingAbbinamenti(true)
+    try {
+      const res = await fetch(`/api/riconcilia/lista?from=${periodo.from}&to=${periodo.to}`)
+      const data = await res.json()
+      setAbbinamenti(Array.isArray(data?.abbinamenti) ? data.abbinamenti : [])
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoadingAbbinamenti(false)
+    }
+  }
 
   return (
     <div>
       <h2 className="text-xl font-bold mb-1">Step 3 — Auto-match</h2>
-      <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
-        Sistema di scoring 0-100 (soggetto 40 · numero fattura nella causale 30 · importo 20 · data 10).
-        Auto-applico se score ≥ 80, classifico come &ldquo;suggerimento&rdquo; tra 50 e 79.
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        Abbino automaticamente le transazioni del periodo alle loro fatture corrispondenti.
       </p>
+
+      {/* Spiegazione "Cosa succede quando premo" */}
+      <div className="mb-4 p-3 rounded-md bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-800 text-xs text-indigo-900 dark:text-indigo-100">
+        <p className="font-semibold mb-1">Cosa succede quando lanci l&apos;auto-match:</p>
+        <ol className="list-decimal list-inside space-y-0.5">
+          <li>Per ogni transazione del periodo cerco la fattura più probabile in base a 4 segnali pesati:
+            <strong> soggetto (40)</strong> · <strong>numero fattura nella causale (30)</strong> · <strong>importo (20)</strong> · <strong>data (10)</strong>.</li>
+          <li>Score ≥ 80 → match applicato al DB. Score 50-79 → suggerimento da disambiguare. {'<'} 50 → ignorato.</li>
+          <li>I suggerimenti incerti vengono mostrati sotto: puoi farli valutare da Claude AI con &quot;Disambigua con AI&quot;.</li>
+          <li>Ogni match crea un alias persistente, così la prossima volta il sistema riconosce subito che &quot;Bonifico da X&quot; = fattura di X.</li>
+        </ol>
+      </div>
+
       <div className="bg-gray-50 dark:bg-gray-900 rounded p-4 mb-4">
         <p className="text-sm">
           <strong>Trans nel periodo:</strong> {stats?.trans.totale ?? '—'} ({stats?.trans.riconciliate ?? 0} già riconciliate, <span className="text-red-700">{stats?.trans.scoperte ?? 0} scoperte</span>)
@@ -989,22 +1049,53 @@ function StepAutoMatch({
             <div>
               <p className="text-[10px] uppercase tracking-wider font-bold text-amber-700 dark:text-amber-300">Suggerimenti incerti</p>
               <p className="text-2xl font-bold text-amber-900 dark:text-amber-100">{suggested}</p>
-              <p className="text-[10px] text-amber-700 dark:text-amber-400">score 50-79 (AI ne valuta la coincidenza)</p>
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">score 50-79</p>
             </div>
             <div>
-              <p className="text-[10px] uppercase tracking-wider font-bold text-gray-700 dark:text-gray-300">Analizzato</p>
-              <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
-                Tutte le trans di {periodo.label} vs fatture da riconciliare.
-              </p>
+              <p className="text-[10px] uppercase tracking-wider font-bold text-gray-700 dark:text-gray-300">Applicati con AI</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{appliedByLLM.length}</p>
+              <p className="text-[10px] text-gray-600 dark:text-gray-400">high-confidence Claude</p>
             </div>
           </div>
+
+          {/* Lista degli applicati con AI (dopo Disambigua) */}
+          {appliedByLLM.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 px-4 py-3 border-t border-indigo-200 dark:border-indigo-800">
+              <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 mb-2">
+                ✓ Match applicati dall&apos;AI:
+              </p>
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {appliedByLLM.map((a, idx) => (
+                  <div key={idx} className="text-xs bg-emerald-50 dark:bg-emerald-950 rounded px-3 py-2 border border-emerald-200 dark:border-emerald-800">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-[10px] uppercase text-gray-500 dark:text-gray-400">Transazione</p>
+                        <p className="font-medium text-gray-900 dark:text-white">{a.transControparte || '—'}</p>
+                        <p className="text-[10px] text-gray-600 dark:text-gray-400">{formatDate(a.transData)} · {formatCurrency(Math.abs(a.transImporto))}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase text-gray-500 dark:text-gray-400">Fattura</p>
+                        <p className="font-medium text-gray-900 dark:text-white">{a.fatturaSoggetto}</p>
+                        <p className="text-[10px] text-gray-600 dark:text-gray-400">{a.fatturaNumero || '—'} · {formatCurrency(a.fatturaTotale)}</p>
+                      </div>
+                    </div>
+                    {a.reason && (
+                      <p className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-1 italic">
+                        AI: {a.reason}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Suggerimenti con score breakdown */}
           {suggestions.length > 0 && (
             <div className="bg-white dark:bg-gray-800 px-4 py-3 border-t border-indigo-200 dark:border-indigo-800">
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                  Top suggerimenti (mostrati {Math.min(suggestions.length, 10)} di {suggestions.length})
+                  Suggerimenti da valutare ({suggestions.length})
                 </p>
                 <button
                   onClick={onDisambiguaAI}
@@ -1015,28 +1106,45 @@ function StepAutoMatch({
                   {llmRunning ? 'AI sta valutando…' : 'Disambigua con AI'}
                 </button>
               </div>
-              <div className="space-y-1.5 max-h-80 overflow-y-auto">
-                {suggestions.slice(0, 10).map((s, idx) => {
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">
+                L&apos;AI riconoscerà se trans e fattura sono lo stesso fornitore (es. &quot;PAYPAL *STRIPE&quot; = &quot;Stripe Payments Europe Ltd&quot;) anche con nomi diversi.
+              </p>
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {suggestions.slice(0, 20).map((s, idx) => {
                   const br = s.scoreBreakdown
                   return (
-                    <div key={idx} className="text-xs bg-gray-50 dark:bg-gray-900 rounded px-3 py-2">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="font-medium text-gray-900 dark:text-white">
-                          {s.fatture_label?.[0] || s.fattura_id?.slice(0, 8)} ↔ {s.soggetto}
-                        </span>
-                        <span className="font-bold text-indigo-700 dark:text-indigo-300">
-                          {s.score}/100
-                        </span>
+                    <div key={idx} className="text-xs bg-gray-50 dark:bg-gray-900 rounded px-3 py-2 border border-gray-200 dark:border-gray-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-bold text-indigo-700 dark:text-indigo-300">{s.score}/100</span>
+                        {br && (
+                          <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                            sog {Math.round(br.subjectScore * 40)} · num {Math.round(br.referenceScore * 30)} · imp {Math.round(br.amountScore * 20)} · data {Math.round(br.dateScore * 10)}
+                          </span>
+                        )}
                       </div>
-                      <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1">
-                        {formatCurrency(s.importo_fatture)} ↔ {formatCurrency(s.importo_transazione)} (diff {formatCurrency(s.differenza)})
-                      </p>
-                      {br && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <div className="bg-red-50/50 dark:bg-red-950/30 rounded px-2 py-1.5">
+                          <p className="text-[10px] uppercase text-red-700 dark:text-red-300 font-semibold">Transazione</p>
+                          <p className="font-medium text-gray-900 dark:text-white truncate" title={s.transControparte || ''}>
+                            {s.transControparte || <em className="text-gray-400">—</em>}
+                          </p>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                            {formatDate(s.transData)} · {formatCurrency(Math.abs(s.transImporto || 0))}
+                          </p>
+                        </div>
+                        <div className="bg-emerald-50/50 dark:bg-emerald-950/30 rounded px-2 py-1.5">
+                          <p className="text-[10px] uppercase text-emerald-700 dark:text-emerald-300 font-semibold">Fattura</p>
+                          <p className="font-medium text-gray-900 dark:text-white truncate" title={s.fatturaSoggetto || ''}>
+                            {s.fatturaSoggetto || s.soggetto || <em className="text-gray-400">—</em>}
+                          </p>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                            {s.fatturaNumero || '—'} · {formatDate(s.fatturaData)} · {formatCurrency(s.fatturaTotale || s.importo_fatture)}
+                          </p>
+                        </div>
+                      </div>
+                      {br?.subjectReason && (
                         <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1">
-                          soggetto {Math.round(br.subjectScore * 40)} ({br.subjectReason}) ·
-                          riferimento {Math.round(br.referenceScore * 30)} ·
-                          importo {Math.round(br.amountScore * 20)} ·
-                          data {Math.round(br.dateScore * 10)}
+                          Motivo soggetto: {br.subjectReason}
                         </p>
                       )}
                     </div>
@@ -1047,19 +1155,66 @@ function StepAutoMatch({
           )}
 
           {/* Nessun match e nessun suggerimento */}
-          {matched === 0 && suggested === 0 && (
+          {matched === 0 && suggested === 0 && appliedByLLM.length === 0 && (
             <div className="bg-yellow-50 dark:bg-yellow-950 px-4 py-3 border-t border-yellow-200 dark:border-yellow-800 text-sm text-yellow-900 dark:text-yellow-100">
               <p className="font-semibold mb-1">⚠ Nessuna coppia raggiunge la soglia minima (score 50).</p>
               <p className="text-xs">
-                Cause possibili: i nomi nelle controparti delle trans non assomigliano abbastanza a quelli sulle fatture
-                (manca la mappatura alias), oppure gli importi differiscono troppo. Suggerimento: vai in <strong>/soggetti</strong>,
-                accorpa manualmente i casi evidenti (es. &ldquo;Bonifico da X&rdquo; ↔ fattura emessa &ldquo;X srl&rdquo;),
-                e rilancia l&apos;auto-match — la prossima volta il sistema riconoscerà gli alias.
+                Vai in <strong>/soggetti</strong>, accorpa manualmente i casi evidenti e rilancia l&apos;auto-match.
               </p>
             </div>
           )}
         </div>
       )}
+
+      {/* SEZIONE: Riconciliazioni già esistenti nel periodo */}
+      <div className="mb-6 border border-gray-200 dark:border-gray-700 rounded-lg">
+        <button
+          onClick={() => {
+            const next = !showAbbinamenti
+            setShowAbbinamenti(next)
+            if (next && abbinamenti.length === 0) loadAbbinamenti()
+          }}
+          className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700"
+        >
+          <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+            Abbinamenti già presenti nel periodo {showAbbinamenti && `(${abbinamenti.length})`}
+          </span>
+          {showAbbinamenti ? <ChevronRight className="h-4 w-4 rotate-90" /> : <ChevronRight className="h-4 w-4" />}
+        </button>
+        {showAbbinamenti && (
+          <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-3">
+            {loadingAbbinamenti ? (
+              <p className="text-sm text-gray-500 text-center py-4">Carico…</p>
+            ) : abbinamenti.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-4">Nessun abbinamento ancora presente nel periodo.</p>
+            ) : (
+              <div className="space-y-1 max-h-96 overflow-y-auto">
+                {abbinamenti.map((a, idx) => (
+                  <div key={idx} className="text-xs bg-emerald-50/50 dark:bg-emerald-950/30 rounded px-3 py-2 border border-emerald-200/50 dark:border-emerald-800/50">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-[10px] uppercase text-gray-500">Trans</p>
+                        <p className="font-medium dark:text-white truncate">{a.trans?.controparte || a.trans?.descrizione || '—'}</p>
+                        <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                          {a.trans ? formatDate(a.trans.data) : ''} · {a.trans?.conto} · {a.trans ? formatCurrency(Math.abs(a.trans.importo)) : ''}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase text-gray-500">Fattura</p>
+                        <p className="font-medium dark:text-white truncate">{a.fattura.soggetto}</p>
+                        <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                          {a.fattura.numero} · {formatDate(a.fattura.data)} · {formatCurrency(a.fattura.totale)}
+                          {a.fattura.tipo === 'emessa' ? ' (emessa)' : ' (ricevuta)'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="flex justify-between">
         <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>

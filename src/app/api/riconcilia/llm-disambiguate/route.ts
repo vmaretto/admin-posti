@@ -148,6 +148,15 @@ Decidi per ogni coppia se la trans sta pagando quella fattura. Rispondi col JSON
 
   // Se apply=true, applica al DB le decisioni high-confidence con match=true
   let applied = 0
+  const appliedDetails: Array<{
+    fatturaSoggetto: string
+    fatturaNumero: string | null
+    fatturaTotale: number
+    transControparte: string | null
+    transData: string
+    transImporto: number
+    reason: string
+  }> = []
   if (apply) {
     const supabase = createServerClient()
     for (const d of decisions) {
@@ -198,6 +207,15 @@ Decidi per ogni coppia se la trans sta pagando quella fattura. Rispondi col JSON
           source: 'llm',
         })
         applied++
+        appliedDetails.push({
+          fatturaSoggetto: s.fatturaSoggetto,
+          fatturaNumero: s.fatturaNumero,
+          fatturaTotale: s.fatturaTotale,
+          transControparte: s.transControparte,
+          transData: s.transData,
+          transImporto: s.transImporto,
+          reason: d.reason,
+        })
       } catch (e) {
         console.error('Errore apply LLM match', e)
       }
@@ -208,6 +226,7 @@ Decidi per ogni coppia se la trans sta pagando quella fattura. Rispondi col JSON
     llmAvailable: true,
     decisions,
     applied,
+    appliedDetails,
     suggestions_count: suggestions.length,
   })
 }

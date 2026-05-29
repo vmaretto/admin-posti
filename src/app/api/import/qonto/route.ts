@@ -30,14 +30,16 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Estrai il testo dal PDF
+  // Estrai il testo dal PDF.
+  // Importante: usiamo pdf-parse v1.1.1 (non v2) perché funziona su Node
+  // serverless senza richiedere DOMMatrix (API browser-only). L'import diretto
+  // della cartella del package importa anche il test runner, che cerca file
+  // di test al filesystem (esplode su Vercel). Per questo importo il file
+  // pdf.js sotto lib/ direttamente.
   let text = ''
   try {
-    // pdf-parse v2 — import default
-    const pdfParseModule = await import('pdf-parse')
-    // pdf-parse v2 supporta sia default function che oggetto con .default
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pdfParse: any = (pdfParseModule as any).default || pdfParseModule
+    const pdfParse: any = (await import('pdf-parse/lib/pdf-parse.js' as string)).default
     const data = await pdfParse(buffer)
     text = data.text || ''
   } catch (e: unknown) {

@@ -688,13 +688,9 @@ function ContoTile({ c, periodo, onRemove }: { c: ContoDettaglio; periodo: Retur
     'no-parser': { label: '—', cls: 'bg-gray-200 text-gray-900 dark:bg-gray-700 dark:text-gray-100' },
   }[status]
 
-  // Conti con parser → link diretto a /import?type=<conto>. Per gli altri
-  // restiamo sulla /import generica.
-  const importLink = c.conto === 'paypal'
-    ? '/import?type=paypal'
-    : c.conto === 'qonto'
-      ? '/import?type=qonto'
-      : '/import'
+  // Link diretto a /import?type=<conto.key>. La pagina /import gestisce
+  // dinamicamente tutte le fonti (Qonto, Sella, Revolut, …).
+  const importLink = `/import?type=${encodeURIComponent(c.conto)}`
 
   return (
     <div className={`relative border-2 rounded-lg p-4 ${styles}`}>

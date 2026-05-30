@@ -51,6 +51,7 @@ src/
       wizard/stats/route.ts          KPI periodo (per tile Step 1)
       wizard/crea-fattura-estera/    POST crea fattura estera collegata
       wizard/ai-classifica-scoperte/ POST AI propone categoria/motivo/azione
+      wizard/ai-assistente-scoperte/ POST chatbot contestuale sulle trans scoperte
       import/fatture-sdi/route.ts    POST CSV cassetto fiscale (totale è GENERATED, non passarlo)
       import/paypal/route.ts         POST CSV PayPal (gestisce BOM)
       import/qonto/route.ts          POST PDF Qonto

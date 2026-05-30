@@ -1584,6 +1584,61 @@ interface TransScoperta {
   conto: string
   controparte: string | null
   descrizione: string | null
+  note: string | null
+}
+
+const AI_CLASS_START = '[AI_CLASSIFICAZIONE]'
+const AI_CLASS_END = '[/AI_CLASSIFICAZIONE]'
+const OPERATIVE_NOTE_START = '[Nota operativa]'
+const OPERATIVE_NOTE_END = '[/Nota operativa]'
+
+function readNoteBlock(note: string | null | undefined, start: string, end: string): string {
+  if (!note) return ''
+  const startIndex = note.indexOf(start)
+  if (startIndex < 0) return ''
+  const contentStart = startIndex + start.length
+  const endIndex = note.indexOf(end, contentStart)
+  if (endIndex < 0) return note.slice(contentStart).trim()
+  return note.slice(contentStart, endIndex).trim()
+}
+
+function writeNoteBlock(note: string | null | undefined, start: string, end: string, content: string): string | null {
+  const existing = note || ''
+  const trimmed = content.trim()
+  const startIndex = existing.indexOf(start)
+  const endIndex = startIndex >= 0 ? existing.indexOf(end, startIndex + start.length) : -1
+  const before = startIndex >= 0 ? existing.slice(0, startIndex).trim() : existing.trim()
+  const after = endIndex >= 0 ? existing.slice(endIndex + end.length).trim() : ''
+  const block = trimmed ? `${start}\n${trimmed}\n${end}` : ''
+  const next = [before, block, after].filter(Boolean).join('\n\n').trim()
+  return next || null
+}
+
+function classificationToNote(c: {
+  categoria?: string
+  possibile_causa?: string
+  azione_suggerita?: string
+}): string {
+  const lines: string[] = []
+  if (c.categoria) lines.push(`Categoria: ${c.categoria.replace(/_/g, ' ')}`)
+  if (c.possibile_causa) lines.push(`Causa: ${c.possibile_causa}`)
+  if (c.azione_suggerita) lines.push(`Azione: ${c.azione_suggerita}`)
+  return lines.join('\n')
+}
+
+function parseStoredAIClassification(note: string | null | undefined): {
+  categoria?: string
+  possibile_causa?: string
+  azione_suggerita?: string
+  motivo_tralascia?: string | null
+} | null {
+  const raw = readNoteBlock(note, AI_CLASS_START, AI_CLASS_END)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
 }
 
 function StepClassificazione({
@@ -1617,6 +1672,11 @@ function StepClassificazione({
     motivo_tralascia?: string | null
   }
   const [aiClassifications, setAiClassifications] = useState<Record<string, AIClassification>>({})
+  const [operativeNotes, setOperativeNotes] = useState<Record<string, string>>({})
+  const [savingNotes, setSavingNotes] = useState<Record<string, boolean>>({})
+  const [assistantQuestion, setAssistantQuestion] = useState('')
+  const [assistantAnswer, setAssistantAnswer] = useState<string | null>(null)
+  const [assistantRunning, setAssistantRunning] = useState(false)
   const [aiRunning, setAiRunning] = useState(false)
 
 
@@ -1740,6 +1800,15 @@ function StepClassificazione({
       const list: TransScoperta[] = Array.isArray(data) ? data : (data.transazioni || [])
       list.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
       setTrans(list)
+      const persistedAI: Record<string, AIClassification> = {}
+      const persistedNotes: Record<string, string> = {}
+      for (const t of list) {
+        const storedAI = parseStoredAIClassification(t.note)
+        if (storedAI) persistedAI[t.id] = storedAI
+        persistedNotes[t.id] = readNoteBlock(t.note, OPERATIVE_NOTE_START, OPERATIVE_NOTE_END)
+      }
+      setAiClassifications(persistedAI)
+      setOperativeNotes(persistedNotes)
       // Arricchimento PayPal: chiamata in parallelo, non blocca la UI
       try {
         const enrRes = await fetch(`/api/transazioni/enrich-paypal?from=${periodo.from}&to=${periodo.to}`)
@@ -1849,6 +1918,41 @@ function StepClassificazione({
     return (c.categoria || '').toLowerCase() === 'fornitore_estero'
   }
 
+  async function patchTransNote(tId: string, note: string | null) {
+    const res = await fetch('/api/transazioni', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: tId, note }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Errore salvataggio nota')
+    setTrans(prev => prev.map(t => t.id === tId ? { ...t, note } : t))
+  }
+
+  async function salvaNotaOperativa(tId: string) {
+    const current = trans.find(t => t.id === tId)
+    if (!current) return
+    setSavingNotes(prev => ({ ...prev, [tId]: true }))
+    try {
+      const nextNote = writeNoteBlock(current.note, OPERATIVE_NOTE_START, OPERATIVE_NOTE_END, operativeNotes[tId] || '')
+      await patchTransNote(tId, nextNote)
+      showFeedback('ok', 'Nota salvata')
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore salvataggio nota')
+    } finally {
+      setSavingNotes(prev => ({ ...prev, [tId]: false }))
+    }
+  }
+
+  async function salvaClassificazioneAI(t: TransScoperta, c: AIClassification) {
+    const withAI = writeNoteBlock(t.note, AI_CLASS_START, AI_CLASS_END, JSON.stringify(c))
+    const hasManualNote = !!readNoteBlock(withAI, OPERATIVE_NOTE_START, OPERATIVE_NOTE_END)
+    const operativeText = hasManualNote ? operativeNotes[t.id] || '' : classificationToNote(c)
+    const nextNote = writeNoteBlock(withAI, OPERATIVE_NOTE_START, OPERATIVE_NOTE_END, operativeText)
+    await patchTransNote(t.id, nextNote)
+    setOperativeNotes(prev => ({ ...prev, [t.id]: operativeText }))
+  }
+
   async function submitTralascia() {
     if (!tralasciaModal) return
     const motivoFinal = tralasciaModal.motivo === 'Altro'
@@ -1935,31 +2039,41 @@ function StepClassificazione({
         showFeedback('ok', 'Tutte le trans hanno già una classificazione AI')
         return
       }
-      const res = await fetch('/api/wizard/ai-classifica-scoperte', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trans: candidates.map(t => ({
-            id: t.id, data: t.data, importo: t.importo,
-            controparte: t.controparte, descrizione: t.descrizione, conto: t.conto,
-          })),
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        if (res.status === 503) {
-          showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
-          return
-        }
-        throw new Error(data.error || 'Errore')
-      }
       const next = { ...aiClassifications }
       const foreignIds: string[] = []
-      for (const c of data.classifications || []) {
-        if (!c?.id) continue
-        next[c.id] = c
-        if (isFornitoreEsteroAI(c)) foreignIds.push(c.id)
+      let analyzed = 0
+      const chunks: TransScoperta[][] = []
+      for (let i = 0; i < candidates.length; i += 30) chunks.push(candidates.slice(i, i + 30))
+
+      for (const chunk of chunks) {
+        const res = await fetch('/api/wizard/ai-classifica-scoperte', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trans: chunk.map(t => ({
+              id: t.id, data: t.data, importo: t.importo,
+              controparte: t.controparte, descrizione: t.descrizione, conto: t.conto,
+            })),
+          }),
+        })
+        const data = await res.json()
+        if (!res.ok) {
+          if (res.status === 503) {
+            showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
+            return
+          }
+          throw new Error(data.error || 'Errore')
+        }
+        analyzed += data.analyzed || 0
+        for (const c of data.classifications || []) {
+          if (!c?.id) continue
+          next[c.id] = c
+          const sourceTrans = trans.find(t => t.id === c.id)
+          if (sourceTrans) await salvaClassificazioneAI(sourceTrans, c)
+          if (isFornitoreEsteroAI(c)) foreignIds.push(c.id)
+        }
       }
+
       setAiClassifications(next)
       let markedForeign = 0
       if (foreignIds.length > 0) {
@@ -1979,7 +2093,7 @@ function StepClassificazione({
       const extra = markedForeign > 0
         ? ` · ${markedForeign} estere messe in coda Step 5`
         : ''
-      showFeedback('ok', `AI ha analizzato ${data.analyzed || 0} trans${data.total > data.analyzed ? ` (di ${data.total} totali)` : ''}${extra}`)
+      showFeedback('ok', `AI ha analizzato ${analyzed} trans${extra}`)
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore AI')
     } finally {
@@ -1996,6 +2110,50 @@ function StepClassificazione({
       memorizzaRegola: true, // di default suggerisco di memorizzarla
       contropartiUniche: contropartiUnicheFromIds([tId]),
     })
+  }
+
+  async function chiediAssistenteAI() {
+    const question = assistantQuestion.trim()
+    if (!question) {
+      showFeedback('err', 'Scrivi una domanda per l’assistente')
+      return
+    }
+    setAssistantRunning(true)
+    setAssistantAnswer(null)
+    try {
+      const res = await fetch('/api/wizard/ai-assistente-scoperte', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          periodo: periodo.label,
+          question,
+          trans: trans.map(t => ({
+            id: t.id,
+            data: t.data,
+            importo: t.importo,
+            conto: t.conto,
+            controparte: t.controparte,
+            descrizione: t.descrizione,
+            ai: aiClassifications[t.id] || null,
+            noteOperative: operativeNotes[t.id] || null,
+            isEstero: row.trans_estere_queue.includes(t.id),
+          })),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (res.status === 503) {
+          showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
+          return
+        }
+        throw new Error(data.error || 'Errore assistente')
+      }
+      setAssistantAnswer(data.answer || 'Nessuna risposta.')
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore assistente')
+    } finally {
+      setAssistantRunning(false)
+    }
   }
 
   // Applica TUTTE le regole memorizzate alle trans del periodo
@@ -2077,6 +2235,44 @@ function StepClassificazione({
             {aiRunning ? 'AI sta analizzando…' : 'Analizza scoperte con AI'}
           </button>
         </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 border border-purple-200 dark:border-purple-800 rounded p-3 mb-4 text-xs">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <p className="font-semibold text-purple-900 dark:text-purple-100 flex items-center gap-1">
+              <Sparkles className="h-3.5 w-3.5" /> Assistente AI sulle scoperte
+            </p>
+            <p className="text-purple-700 dark:text-purple-300 mt-0.5">
+              Fai una domanda puntuale usando le analisi e le note salvate del periodo.
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="text"
+            value={assistantQuestion}
+            onChange={e => setAssistantQuestion(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !assistantRunning) void chiediAssistenteAI()
+            }}
+            placeholder="Es. quali scoperte sembrano estere ma non sono ancora in coda?"
+            className="min-w-0 flex-1 rounded border border-purple-200 px-3 py-2 text-sm dark:bg-gray-900 dark:border-purple-800"
+          />
+          <button
+            onClick={chiediAssistenteAI}
+            disabled={assistantRunning || !assistantQuestion.trim()}
+            className="inline-flex items-center justify-center gap-1 rounded bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {assistantRunning ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            Chiedi
+          </button>
+        </div>
+        {assistantAnswer && (
+          <div className="mt-3 whitespace-pre-wrap rounded border border-purple-100 bg-purple-50 p-3 text-sm text-purple-900 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-100">
+            {assistantAnswer}
+          </div>
+        )}
       </div>
 
       {/* Toolbar selezione multipla */}
@@ -2239,6 +2435,31 @@ function StepClassificazione({
                   )}
                 </div>
               )}
+
+              <div className="sm:ml-8 sm:mr-4 mb-1 px-3 py-2 rounded bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs">
+                <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                  Nota operativa
+                </label>
+                <textarea
+                  value={operativeNotes[t.id] || ''}
+                  onChange={e => setOperativeNotes(prev => ({ ...prev, [t.id]: e.target.value }))}
+                  rows={2}
+                  placeholder={ai ? 'Modifica la nota proposta dall’AI...' : 'Aggiungi una nota manuale per questa transazione...'}
+                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs dark:bg-gray-900 dark:border-gray-600"
+                />
+                <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                    Salvata nella transazione, resta anche dopo refresh.
+                  </span>
+                  <button
+                    onClick={() => salvaNotaOperativa(t.id)}
+                    disabled={savingNotes[t.id]}
+                    className="inline-flex items-center gap-1 rounded bg-gray-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-gray-600 dark:hover:bg-gray-500"
+                  >
+                    {savingNotes[t.id] ? 'Salvo...' : 'Salva nota'}
+                  </button>
+                </div>
+              </div>
               </div>
             )
           })}

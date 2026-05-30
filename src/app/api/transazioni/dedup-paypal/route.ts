@@ -11,8 +11,9 @@ export const dynamic = 'force-dynamic'
 // importo e data vicina. Le tralascia con motivo "Spostamento tra conti"
 // arricchendo le note col vero fornitore (Vimeo, Stripe, ecc.).
 //
-// In questo modo le trans bancarie spariscono dalle "scoperte" e solo le
-// trans PayPal restano come candidate per il match con le fatture.
+// In questo modo le trans bancarie PayPal-like spariscono dalle "scoperte".
+// Le righe conto='paypal' sono solo supporto informativo importato dal CSV:
+// non vanno considerate tralasciate ne' candidate contabili autonome.
 //
 // Risposta: { deduped: N, details: [...] }
 export async function POST(request: NextRequest) {
@@ -71,11 +72,11 @@ export async function POST(request: NextRequest) {
     const { ppT, code, strategy, giorniDiff } = match
     usedPaypalIds.add(ppT.id)
 
-    // Coppia non trovata, salta
-    if (!ppT) continue // Coppia non trovata, salta
     const realFornitore = ppT.controparte || ppT.descrizione || null
-    const tag = `[Tralasciata: Spostamento tra conti]`
-    const nota = `${tag}\nGiroconto a wallet PayPal · vero fornitore: ${realFornitore || 'sconosciuto'} · match ${strategy}${code ? ` · codice ${code}` : ''} · trans PayPal id ${ppT.id}${bankT.note ? '\n' + bankT.note : ''}`
+    const nota = withTralasciataTag(
+      bankT.note,
+      `Giroconto a wallet PayPal · vero fornitore: ${realFornitore || 'sconosciuto'} · match ${strategy}${code ? ` · codice ${code}` : ''} · trans PayPal id ${ppT.id}`,
+    )
     const { error } = await supabase
       .from('transazioni')
       .update({
@@ -105,6 +106,14 @@ export async function POST(request: NextRequest) {
 
 function looksLikePaypal(...texts: (string | null | undefined)[]): boolean {
   return texts.filter(Boolean).join(' ').toLowerCase().includes('paypal')
+}
+
+function withTralasciataTag(note: string | null | undefined, detail: string): string {
+  const tag = `[Tralasciata: Spostamento tra conti]`
+  const cleaned = (note || '')
+    .replace(/^\[Tralasciata:\s*.+?\]\n*/g, '')
+    .trim()
+  return [tag, detail, cleaned].filter(Boolean).join('\n')
 }
 
 function extractCode(...texts: (string | null | undefined)[]): string | null {

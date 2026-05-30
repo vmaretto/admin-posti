@@ -4,6 +4,14 @@ import { normalizeName } from '@/lib/matching'
 
 export const dynamic = 'force-dynamic'
 
+function withTralasciataTag(note: string | null | undefined, motivo: string): string {
+  const tag = `[Tralasciata: ${motivo}]`
+  const cleaned = (note || '')
+    .replace(/^\[Tralasciata:\s*.+?\]\n*/g, '')
+    .trim()
+  return cleaned ? `${tag}\n${cleaned}` : tag
+}
+
 // POST /api/auto-tralascia/apply?from=YYYY-MM-DD&to=YYYY-MM-DD
 //
 // Per il periodo indicato, scorre tutte le trans `da_riconciliare`, verifica
@@ -40,6 +48,7 @@ export async function POST(request: NextRequest) {
     .from('transazioni')
     .select('id, controparte, note')
     .eq('stato_riconciliazione', 'da_riconciliare')
+    .neq('conto', 'paypal')
   if (from) q = q.gte('data', from)
   if (to) q = q.lte('data', to)
   const { data: trans, error: errT } = await q.range(0, 9999)
@@ -54,9 +63,7 @@ export async function POST(request: NextRequest) {
     const rule = ruleMap.get(norm)
     if (!rule) continue
     perRegola.set(rule.motivo, (perRegola.get(rule.motivo) || 0) + 1)
-    const tag = `[Tralasciata: ${rule.motivo}]`
-    const oldNote = (t.note || '').trim()
-    const newNote = oldNote ? `${tag}\n${oldNote}` : tag
+    const newNote = withTralasciataTag(t.note, rule.motivo)
     updates.push({ id: t.id, motivo: rule.motivo, note: newNote })
   }
 

@@ -1709,9 +1709,10 @@ function StepClassificazione({
       const res = await fetch(url)
       const data = await res.json()
       const list = Array.isArray(data) ? data : (data.transazioni || [])
+      const visibleList = list.filter((t: TransTralasciataLite) => t.conto !== 'paypal')
       // estraggo motivo da note
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const enriched = list.map((t: any) => {
+      const enriched = visibleList.map((t: any) => {
         const m = /^\[Tralasciata:\s*(.+?)\]/.exec(t.note || '')
         return { ...t, motivo: m ? m[1] : '(senza motivo)' }
       })
@@ -1797,7 +1798,8 @@ function StepClassificazione({
       const url = `/api/transazioni?stato=da_riconciliare&from=${periodo.from}&to=${periodo.to}`
       const res = await fetch(url)
       const data = await res.json()
-      const list: TransScoperta[] = Array.isArray(data) ? data : (data.transazioni || [])
+      const rawList: TransScoperta[] = Array.isArray(data) ? data : (data.transazioni || [])
+      const list = rawList.filter(t => t.conto !== 'paypal')
       list.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
       setTrans(list)
       const persistedAI: Record<string, AIClassification> = {}
@@ -1994,6 +1996,7 @@ function StepClassificazione({
       setTralasciaModal(null)
       setSelected(new Set())
       await reloadTrans()
+      await reloadTralasciate()
       await onReloadStats()
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore')

@@ -153,7 +153,7 @@ Lancia in ordine i file in `supabase-migrations/` (o usa `_all.sql` aggregato). 
 - **SDI CSV usa `\r\n` + apici doppi+singoli** (`"'F-2026-20'"`), va deserializzato attentamente.
 - **Auto-match score**: subject 40 + reference 30 + amount 20 + date 10. Soglia auto 80, suggest 50-79.
 - **Tolleranza importo adattiva**: `max(2€, 0.5% del totale fattura)`. Tolleranza data appresa da `match_history` quando ≥3 sample per soggetto.
-- **Dedup PayPal a monte**: trans bancarie "PayPal Europe..." con codice transazione che matcha una trans PayPal vengono tralasciate come "Spostamento tra conti" (è il giroconto al wallet, non il pagamento al fornitore vero).
+- **PayPal CSV è support-only**: le righe `conto='paypal'` servono per arricchire/deduplicare le trans bancarie Qonto/Sella verso PayPal. Non vanno considerate scoperte o tralasciate autonome. Il dedup tralascia la trans bancaria PayPal-like come "Spostamento tra conti" preservando le note.
 
 ## Comandi utili
 

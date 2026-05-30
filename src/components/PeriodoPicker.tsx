@@ -31,7 +31,7 @@ function PeriodoPickerInner() {
 
   return (
     <div className="bg-indigo-700 dark:bg-gray-800 text-white sticky top-0 z-30 shadow-md border-b border-indigo-800 dark:border-gray-700">
-      <div className="max-w-7xl mx-auto px-4 py-2 flex items-center gap-3 flex-wrap">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 flex items-center gap-2 sm:gap-3 flex-wrap">
         <Calendar className="h-4 w-4 text-indigo-200 dark:text-indigo-300" />
         <span className="text-xs font-semibold uppercase tracking-wider text-indigo-100">
           Periodo
@@ -64,7 +64,7 @@ function PeriodoPickerInner() {
               )
             }
           }}
-          className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1 border border-indigo-500 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-300"
+          className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1.5 sm:py-1 border border-indigo-500 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-300"
         >
           <option value="tutto">Tutto</option>
           <option value="anno">Anno</option>
@@ -85,7 +85,7 @@ function PeriodoPickerInner() {
                 }),
               )
             }
-            className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1 border border-indigo-500 dark:border-gray-600"
+            className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1.5 sm:py-1 border border-indigo-500 dark:border-gray-600"
           >
             {anni.map(y => (
               <option key={y} value={y}>
@@ -107,7 +107,7 @@ function PeriodoPickerInner() {
                 }),
               )
             }
-            className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1 border border-indigo-500 dark:border-gray-600"
+            className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1.5 sm:py-1 border border-indigo-500 dark:border-gray-600"
           >
             <option value={1}>Q1 (gen-mar)</option>
             <option value={2}>Q2 (apr-giu)</option>
@@ -128,7 +128,7 @@ function PeriodoPickerInner() {
                 }),
               )
             }
-            className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1 border border-indigo-500 dark:border-gray-600"
+            className="text-xs bg-indigo-800 dark:bg-gray-900 text-white rounded px-2 py-1.5 sm:py-1 border border-indigo-500 dark:border-gray-600"
           >
             {MESI_LABELS.map((m, i) => (
               <option key={i} value={i + 1}>
@@ -138,7 +138,7 @@ function PeriodoPickerInner() {
           </select>
         )}
 
-        <span className="ml-auto text-xs text-indigo-200 dark:text-gray-400">
+        <span className="w-full text-xs text-indigo-200 dark:text-gray-400 sm:ml-auto sm:w-auto">
           {p.tipo !== 'tutto' ? (
             <>
               Filtro: <strong className="text-white">{p.from}</strong> →{' '}

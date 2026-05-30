@@ -92,17 +92,17 @@ function StatCard({
   }
   
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 sm:p-6">
       <div className="flex items-start justify-between">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</p>
-          <p className={`text-3xl font-bold mt-2 ${iconColorClasses[color]}`}>{value}</p>
+          <p className={`text-3xl sm:text-3xl font-bold mt-2 leading-none ${iconColorClasses[color]}`}>{value}</p>
           {subValue && (
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{subValue}</p>
           )}
         </div>
-        <div className={`p-3 rounded-lg ${bgColorClasses[bgColor]}`}>
-          <Icon className={`h-6 w-6 ${iconColorClasses[color]}`} />
+        <div className={`shrink-0 p-3 rounded-lg ${bgColorClasses[bgColor]}`}>
+          <Icon className={`h-5 w-5 sm:h-6 sm:w-6 ${iconColorClasses[color]}`} />
         </div>
       </div>
     </div>
@@ -119,6 +119,8 @@ function DashboardInner() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Caricamento remoto pilotato dal periodo URL; lo stato serve solo per feedback UI.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     let url = '/api/dashboard'
     if (periodo.from && periodo.to) {
@@ -156,14 +158,14 @@ function DashboardInner() {
     : 0
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Dashboard pOsti SRL</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">Panoramica riconciliazione</p>
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white leading-tight">Dashboard pOsti SRL</h1>
+        <p className="text-sm sm:text-base text-gray-500 dark:text-gray-400 mt-1">Panoramica riconciliazione</p>
       </div>
       
       {/* Main Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-6">
         <StatCard
           icon={FileText}
           label="📄 Fatture"
@@ -202,8 +204,8 @@ function DashboardInner() {
       </div>
       
       {/* Progress Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 sm:p-6">
           <div className="flex items-center gap-3 mb-4">
             <FileText className="h-5 w-5 text-indigo-600" />
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Riconciliazione Fatture</h3>
@@ -213,7 +215,7 @@ function DashboardInner() {
             max={stats.fatture.totali} 
             color="indigo"
           />
-          <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <div>
               <span className="text-gray-500 dark:text-gray-400">Importo totale</span>
               <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(stats.fatture.importo_totale)}</p>
@@ -225,7 +227,7 @@ function DashboardInner() {
           </div>
         </div>
         
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 sm:p-6">
           <div className="flex items-center gap-3 mb-4">
             <CreditCard className="h-5 w-5 text-blue-600" />
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Riconciliazione Transazioni</h3>
@@ -235,7 +237,7 @@ function DashboardInner() {
             max={stats.transazioni.totali} 
             color="indigo"
           />
-          <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <div>
               <span className="text-gray-500 dark:text-gray-400">Importo incassi</span>
               <p className="font-semibold text-gray-900 dark:text-white">{formatCurrency(stats.transazioni.importo_incassi)}</p>
@@ -249,13 +251,13 @@ function DashboardInner() {
       </div>
       
       {/* Financial Summary */}
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 sm:p-6">
         <div className="flex items-center gap-3 mb-6">
           <Euro className="h-5 w-5 text-green-600" />
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">💰 Riepilogo Importi</h3>
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-6">
           <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
             <p className="text-sm text-green-600 dark:text-green-400">Totale Entrate</p>
             <p className="text-2xl font-bold text-green-700 dark:text-green-300">{formatCurrency(stats.totale_entrate)}</p>

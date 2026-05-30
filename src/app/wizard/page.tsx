@@ -1842,6 +1842,34 @@ function StepClassificazione({
     }
   }
 
+  // Forza il dedup PayPal sul periodo (utile per i mesi vecchi caricati
+  // prima dell'integrazione automatica)
+  const [dedupping, setDedupping] = useState(false)
+  async function forzaDedupPayPal() {
+    if (!periodo.from || !periodo.to) return
+    setDedupping(true)
+    try {
+      const res = await fetch(`/api/transazioni/dedup-paypal?from=${periodo.from}&to=${periodo.to}`, {
+        method: 'POST',
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      const n = data.deduped || 0
+      if (n === 0) {
+        showFeedback('ok', 'Nessuna trans PayPal-giroconto trovata da deduplicare')
+      } else {
+        showFeedback('ok', `${n} trans bancarie marcate come "Spostamento tra conti" (giroconto al wallet PayPal)`)
+        await reloadTrans()
+        await reloadTralasciate()
+        await onReloadStats()
+      }
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    } finally {
+      setDedupping(false)
+    }
+  }
+
   // Analizza con AI le trans scoperte
   async function analizzaConAI() {
     if (trans.length === 0) return
@@ -1949,6 +1977,15 @@ function StepClassificazione({
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={forzaDedupPayPal}
+            disabled={dedupping}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white whitespace-nowrap"
+            title="Identifica i bonifici verso il wallet PayPal e li tralascia come Spostamento tra conti (la trans PayPal verso il vero fornitore resta)"
+          >
+            {dedupping ? <RefreshCw className="h-3 w-3 animate-spin" /> : null}
+            {dedupping ? 'Dedup…' : 'Dedup PayPal'}
+          </button>
           <button
             onClick={applicaRegoleEsistenti}
             disabled={applyingRules}

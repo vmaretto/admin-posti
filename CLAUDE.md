@@ -182,4 +182,4 @@ npm run build
 I segreti (Supabase, Anthropic, GitHub PAT) **NON** vanno in repo. Sono su Vercel Settings → Environment Variables. Per dev locale: `.env.local` (gitignored).
 
 ---
-Ultimo aggiornamento: chiusura sessione del 29 maggio 2026, commit `c46c7cc`.
+Ultimo aggiornamento: chiusura sessione del 30 maggio 2026, commit `18ac0fb`.

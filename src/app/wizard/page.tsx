@@ -1559,52 +1559,16 @@ function StepClassificazione({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [applyingRules, setApplyingRules] = useState(false)
 
-  // Classificazioni AI per trans scoperte
+  // Classificazione AI delle trans scoperte
   interface AIClassification {
-    id: string
     categoria?: string
     possibile_causa?: string
     azione_suggerita?: string
     motivo_tralascia?: string | null
   }
   const [aiClassifications, setAiClassifications] = useState<Record<string, AIClassification>>({})
-  const [aiAnalyzing, setAiAnalyzing] = useState(false)
+  const [aiRunning, setAiRunning] = useState(false)
 
-  async function analizzaConAI() {
-    if (trans.length === 0) return
-    setAiAnalyzing(true)
-    try {
-      const payload = trans.slice(0, 30).map(t => ({
-        id: t.id,
-        data: t.data,
-        importo: t.importo,
-        controparte: t.controparte,
-        descrizione: t.descrizione,
-        conto: t.conto,
-      }))
-      const res = await fetch('/api/wizard/ai-classifica-scoperte', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trans: payload }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        if (res.status === 503) showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
-        else throw new Error(data.error || 'Errore')
-        return
-      }
-      const map: Record<string, AIClassification> = {}
-      for (const c of data.classifications || []) {
-        if (c?.id) map[c.id] = c
-      }
-      setAiClassifications(prev => ({ ...prev, ...map }))
-      showFeedback('ok', `AI ha analizzato ${data.analyzed}/${data.total} trans`)
-    } catch (e: unknown) {
-      showFeedback('err', e instanceof Error ? e.message : 'Errore AI')
-    } finally {
-      setAiAnalyzing(false)
-    }
-  }
 
   // Trans tralasciate del periodo (per la sezione "vedi tralasciate")
   interface TransTralasciataLite {
@@ -1878,6 +1842,60 @@ function StepClassificazione({
     }
   }
 
+  // Analizza con AI le trans scoperte
+  async function analizzaConAI() {
+    if (trans.length === 0) return
+    setAiRunning(true)
+    try {
+      // Manda solo quelle ancora da decidere (no Estero, no AI già fatto)
+      const candidates = trans.filter(t => !row.trans_estere_queue.includes(t.id) && !aiClassifications[t.id])
+      if (candidates.length === 0) {
+        showFeedback('ok', 'Tutte le trans hanno già una classificazione AI')
+        return
+      }
+      const res = await fetch('/api/wizard/ai-classifica-scoperte', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trans: candidates.map(t => ({
+            id: t.id, data: t.data, importo: t.importo,
+            controparte: t.controparte, descrizione: t.descrizione, conto: t.conto,
+          })),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (res.status === 503) {
+          showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
+          return
+        }
+        throw new Error(data.error || 'Errore')
+      }
+      const next = { ...aiClassifications }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const c of data.classifications || []) {
+        if (c?.id) next[c.id] = c
+      }
+      setAiClassifications(next)
+      showFeedback('ok', `AI ha analizzato ${data.analyzed || 0} trans${data.total > data.analyzed ? ` (di ${data.total} totali)` : ''}`)
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore AI')
+    } finally {
+      setAiRunning(false)
+    }
+  }
+
+  // Tralascia singola con motivo suggerito dall'AI
+  function tralasciaConMotivoAI(tId: string, motivo: string) {
+    setTralasciaModal({
+      ids: [tId],
+      motivo,
+      custom: '',
+      memorizzaRegola: true, // di default suggerisco di memorizzarla
+      contropartiUniche: contropartiUnicheFromIds([tId]),
+    })
+  }
+
   // Applica TUTTE le regole memorizzate alle trans del periodo
   async function applicaRegoleEsistenti() {
     if (!periodo.from || !periodo.to) return
@@ -1940,12 +1958,12 @@ function StepClassificazione({
           </button>
           <button
             onClick={analizzaConAI}
-            disabled={aiAnalyzing || trans.length === 0}
+            disabled={aiRunning || trans.length === 0}
             className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white whitespace-nowrap"
             title="Chiedi all'AI di analizzare le scoperte e suggerire motivazioni"
           >
-            {aiAnalyzing ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-            {aiAnalyzing ? 'AI sta analizzando…' : 'Analizza scoperte con AI'}
+            {aiRunning ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+            {aiRunning ? 'AI sta analizzando…' : 'Analizza scoperte con AI'}
           </button>
         </div>
       </div>
@@ -1983,9 +2001,10 @@ function StepClassificazione({
             const isEstero = queueSet.has(t.id)
             const importoAbs = Math.abs(t.importo)
             const isSelected = selected.has(t.id)
+            const ai = aiClassifications[t.id]
             return (
+              <div key={t.id} className="space-y-1">
               <div
-                key={t.id}
                 className={`flex items-center gap-3 px-3 py-2 rounded text-sm border ${
                   isSelected
                     ? 'bg-amber-50 dark:bg-amber-950 border-amber-400'
@@ -2062,6 +2081,47 @@ function StepClassificazione({
                     </button>
                   </>
                 )}
+              </div>
+
+              {/* Pannello AI: classificazione + azione consigliata */}
+              {ai && !isEstero && (
+                <div className="ml-8 mr-4 mb-1 px-3 py-2 rounded bg-purple-50/60 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 text-xs">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <span className="text-purple-700 dark:text-purple-300 font-bold">🤖 AI:</span>
+                    {ai.categoria && (
+                      <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-purple-200 dark:bg-purple-800 text-purple-900 dark:text-purple-100">
+                        {ai.categoria.replace(/_/g, ' ')}
+                      </span>
+                    )}
+                    {ai.categoria === 'fornitore_estero' && (
+                      <button
+                        onClick={() => marcaEstero(t.id)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                      >
+                        <Globe className="h-3 w-3" /> Marca Estero
+                      </button>
+                    )}
+                    {ai.motivo_tralascia && (
+                      <button
+                        onClick={() => tralasciaConMotivoAI(t.id, ai.motivo_tralascia!)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-amber-600 hover:bg-amber-700 text-white font-bold"
+                      >
+                        Tralascia con &ldquo;{ai.motivo_tralascia}&rdquo;
+                      </button>
+                    )}
+                  </div>
+                  {ai.possibile_causa && (
+                    <p className="text-purple-800 dark:text-purple-200 italic">
+                      Causa: {ai.possibile_causa}
+                    </p>
+                  )}
+                  {ai.azione_suggerita && (
+                    <p className="text-purple-700 dark:text-purple-300 mt-0.5">
+                      Azione: {ai.azione_suggerita}
+                    </p>
+                  )}
+                </div>
+              )}
               </div>
             )
           })}

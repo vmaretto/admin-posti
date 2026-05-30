@@ -125,12 +125,76 @@ export async function insertTransazioni(
     inserted = toInsert.length
   }
 
+  // Post-import: tenta dedup PayPal in modo asincrono (non blocca la risposta)
+  // Identifica trans bancarie giroconto-al-wallet che hanno un match con
+  // trans PayPal già caricate.
+  let dedupedPaypal = 0
+  if (periodo.from && periodo.to) {
+    try {
+      // Chiamata interna: usa lo stesso supabase client per dedup
+      // Invece di fare una HTTP call interna, replico la logica qui.
+      const { data: bank } = await supabase
+        .from('transazioni')
+        .select('id, conto, importo, descrizione, note, riferimento')
+        .neq('conto', 'paypal')
+        .ilike('controparte', '%paypal%')
+        .eq('stato_riconciliazione', 'da_riconciliare')
+        .gte('data', periodo.from)
+        .lte('data', periodo.to)
+        .range(0, 9999)
+
+      if (bank && bank.length > 0) {
+        const codes: string[] = []
+        const bankByCode = new Map<string, typeof bank[number]>()
+        for (const t of bank) {
+          const blob = [t.descrizione, t.note, t.riferimento].filter(Boolean).join(' ')
+          const m = /\b(\d{10,})\b/.exec(blob)
+          if (m) {
+            codes.push(m[1])
+            bankByCode.set(m[1], t)
+          }
+        }
+        if (codes.length > 0) {
+          const { data: pp } = await supabase
+            .from('transazioni')
+            .select('id, controparte, descrizione, riferimento')
+            .eq('conto', 'paypal')
+            .in('riferimento', codes)
+            .range(0, 9999)
+          const ppByCode = new Map<string, NonNullable<typeof pp>[number]>()
+          for (const p of pp || []) {
+            if (p.riferimento) ppByCode.set(String(p.riferimento), p)
+          }
+          for (const [code, bankT] of bankByCode.entries()) {
+            const ppT = ppByCode.get(code)
+            if (!ppT) continue
+            const realFornitore = ppT.controparte || ppT.descrizione || null
+            const tag = `[Tralasciata: Spostamento tra conti]`
+            const nota = `${tag}\nGiroconto a wallet PayPal · vero fornitore: ${realFornitore || 'sconosciuto'} · codice PayPal ${code}${bankT.note ? '\n' + bankT.note : ''}`
+            await supabase
+              .from('transazioni')
+              .update({
+                stato_riconciliazione: 'non_trovata',
+                note: nota,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', bankT.id)
+            dedupedPaypal++
+          }
+        }
+      }
+    } catch {
+      // best effort, non blocca l'import
+    }
+  }
+
   return NextResponse.json({
     success: true,
     imported: inserted,
     skipped,
     parsed: rows.length,
     periodo,
+    dedupedPaypal,
     ...extras,
   })
 }

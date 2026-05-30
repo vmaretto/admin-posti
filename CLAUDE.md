@@ -27,6 +27,7 @@ src/
     transazioni/page.tsx             Lista trans per controparte
     fatture-estere/page.tsx          Lista fatture estere
     import/page.tsx                  Pagina import (dinamica da conti_config)
+    import/tabelle/page.tsx          Tabelle navigabili import per fonte (filtri, sort, search, paginazione)
     wizard/page.tsx                  Wizard riconciliazione (Step 0-6, ~2500 righe)
     analisi-2025/page.tsx            Vista analisi anno 2025 (legacy)
     api/
@@ -43,6 +44,7 @@ src/
       riconcilia/lista/route.ts      GET abbinamenti del periodo
       riconcilia/llm-disambiguate/   POST AI valuta suggerimenti incerti
       conti/route.ts                 CRUD conti_config (fonti import)
+      import/tabelle/[fonte]/route.ts GET righe import per fonte con filtri/sort/paginazione e totali
       auto-tralascia/route.ts        CRUD regole "tralascia sempre"
       auto-tralascia/apply/route.ts  Applica regole al periodo
       wizard/periodo/route.ts        Stato avanzamento wizard (wizard_periodi)
@@ -139,7 +141,6 @@ Lancia in ordine i file in `supabase-migrations/` (o usa `_all.sql` aggregato). 
 
 ## Punti aperti / TODO conosciuti
 
-- [ ] Pagina `/import/tabelle` con tabella navigabile per ogni fonte (filtri, ordinamento, ricerca). Per i controlli manuali.
 - [ ] Step 1 wizard: counter "ultimo movimento" per conto (oggi mostra solo first/last del periodo, no last assoluto).
 - [ ] Parser Wise (al momento non richiesto, ma `conti_config` lo accetta come fonte custom).
 - [ ] Audit ricavi/costi cross-periodo per cogliere fatture spostate di mese.

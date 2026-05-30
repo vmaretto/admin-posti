@@ -46,6 +46,11 @@ interface ContoDettaglio {
   lastDate: string | null
   maxGapDays: number
   presentNelDb: boolean
+  ultimoMovimentoAssoluto: {
+    data: string
+    importo: number
+    controparte: string
+  } | null
 }
 
 interface WizardStats {
@@ -79,6 +84,14 @@ interface WizardStats {
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(n)
+}
+
+function daysSince(date: string): number {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const value = new Date(`${date}T00:00:00`)
+  if (Number.isNaN(value.getTime())) return 9999
+  return Math.max(0, Math.floor((today.getTime() - value.getTime()) / (1000 * 60 * 60 * 24)))
 }
 
 function WizardInner() {
@@ -834,6 +847,15 @@ function StepMovimentiBancari({
 
 function ContoTile({ c, periodo, onRemove }: { c: ContoDettaglio; periodo: ReturnType<typeof parsePeriodo>; onRemove?: () => void }) {
   const status = getTileStatus(c)
+  const ultimoAssoluto = c.ultimoMovimentoAssoluto
+  const ultimoAssolutoAge = ultimoAssoluto ? daysSince(ultimoAssoluto.data) : null
+  const ultimoAssolutoCls = !ultimoAssoluto
+    ? 'text-red-700 dark:text-red-300 font-semibold'
+    : ultimoAssolutoAge !== null && ultimoAssolutoAge > 30
+      ? 'text-red-700 dark:text-red-300 font-semibold'
+      : ultimoAssolutoAge !== null && ultimoAssolutoAge > 7
+        ? 'text-orange-700 dark:text-orange-300 font-semibold'
+        : 'text-gray-700 dark:text-gray-300'
   const styles = {
     empty: 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950',
     partial: 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950',
@@ -886,6 +908,19 @@ function ContoTile({ c, periodo, onRemove }: { c: ContoDettaglio; periodo: Retur
             {' al '}
             {c.lastDate ? new Date(c.lastDate).toLocaleDateString('it-IT') : '—'}
           </p>
+          <p className={`text-[11px] mt-1 ${ultimoAssolutoCls}`}>
+            {ultimoAssoluto ? (
+              <>
+                Ultimo movimento assoluto: {new Date(ultimoAssoluto.data).toLocaleDateString('it-IT')} ·{' '}
+                {ultimoAssoluto.controparte || 'Controparte non indicata'}
+                {ultimoAssolutoAge !== null && ultimoAssolutoAge > 30 && (
+                  <span> · importa estratto aggiornato</span>
+                )}
+              </>
+            ) : (
+              'Nessun movimento mai importato'
+            )}
+          </p>
           {c.maxGapDays > GAP_WARN_DAYS && (
             <p className="text-[11px] mt-1 text-amber-700 dark:text-amber-300 font-semibold">
               ⚠ Gap massimo {c.maxGapDays} giorni
@@ -899,6 +934,21 @@ function ContoTile({ c, periodo, onRemove }: { c: ContoDettaglio; periodo: Retur
           {c.hasParser
             ? ' Vai a /import per caricare il CSV.'
             : ' Parser non disponibile — caricali come fai di solito, poi torna qui.'}
+        </p>
+      )}
+      {c.count === 0 && (
+        <p className={`text-[11px] mt-2 ${ultimoAssolutoCls}`}>
+          {ultimoAssoluto ? (
+            <>
+              Ultimo movimento assoluto: {new Date(ultimoAssoluto.data).toLocaleDateString('it-IT')} ·{' '}
+              {ultimoAssoluto.controparte || 'Controparte non indicata'}
+              {ultimoAssolutoAge !== null && ultimoAssolutoAge > 30 && (
+                <span> · importa estratto aggiornato</span>
+              )}
+            </>
+          ) : (
+            'Nessun movimento mai importato'
+          )}
         </p>
       )}
       <Link

@@ -24,6 +24,17 @@ interface ContoStats {
   lastDate: string | null
   maxGapDays: number // gap massimo (in giorni) senza movimenti dentro il periodo
   presentNelDb: boolean
+  ultimoMovimentoAssoluto: {
+    data: string
+    importo: number
+    controparte: string
+  } | null
+}
+
+interface UltimoMovimentoAssoluto {
+  data: string
+  importo: number
+  controparte: string
 }
 
 function daysBetween(a: string, b: string): number {
@@ -46,6 +57,44 @@ function computeMaxGap(dates: string[], periodFrom: string, periodTo: string): n
   // gap finale: ultima data → periodTo
   maxGap = Math.max(maxGap, daysBetween(sorted[sorted.length - 1], periodTo))
   return maxGap
+}
+
+async function getUltimiMovimentiAssoluti(
+  supabase: ReturnType<typeof createServerClient>,
+  conti: string[],
+): Promise<Map<string, UltimoMovimentoAssoluto>> {
+  const entries = await Promise.all(
+    conti.map(async conto => {
+      const { data: maxRows } = await supabase
+        .from('transazioni')
+        .select('ultima_data:data.max()')
+        .eq('conto', conto)
+
+      const ultimaData = Array.isArray(maxRows) ? maxRows[0]?.ultima_data : null
+      if (!ultimaData) return null
+
+      const { data } = await supabase
+        .from('transazioni')
+        .select('data, importo, controparte')
+        .eq('conto', conto)
+        .eq('data', ultimaData)
+        .order('id', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (!data?.data) return null
+      return [
+        conto,
+        {
+          data: data.data,
+          importo: Number(data.importo || 0),
+          controparte: data.controparte || '',
+        },
+      ] as const
+    }),
+  )
+
+  return new Map(entries.filter(entry => entry !== null))
 }
 
 // GET ?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -111,6 +160,8 @@ export async function GET(request: NextRequest) {
   const contiAttesiKeys = new Set(CONTI_ATTESI.map(c => c.key))
   const contiDb = Array.from(perContoMap.keys()).filter(k => k && k !== '?')
   const contiAltri = contiDb.filter(k => !contiAttesiKeys.has(k))
+  const allContiKeys = [...CONTI_ATTESI.map(c => c.key), ...contiAltri]
+  const ultimiMovimentiAssoluti = await getUltimiMovimentiAssoluti(supabase, allContiKeys)
 
   const allConti: ContoStats[] = []
   for (const ca of CONTI_ATTESI) {
@@ -128,6 +179,7 @@ export async function GET(request: NextRequest) {
       lastDate: sorted[sorted.length - 1] || null,
       maxGapDays: computeMaxGap(dates, from, to),
       presentNelDb: dates.length > 0,
+      ultimoMovimentoAssoluto: ultimiMovimentiAssoluti.get(ca.key) || null,
     })
   }
   for (const k of contiAltri) {
@@ -144,6 +196,7 @@ export async function GET(request: NextRequest) {
       lastDate: sorted[sorted.length - 1] || null,
       maxGapDays: computeMaxGap(g.dates, from, to),
       presentNelDb: true,
+      ultimoMovimentoAssoluto: ultimiMovimentiAssoluti.get(k) || null,
     })
   }
 

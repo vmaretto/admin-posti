@@ -141,7 +141,6 @@ Lancia in ordine i file in `supabase-migrations/` (o usa `_all.sql` aggregato). 
 
 ## Punti aperti / TODO conosciuti
 
-- [ ] Step 1 wizard: counter "ultimo movimento" per conto (oggi mostra solo first/last del periodo, no last assoluto).
 - [ ] Parser Wise (al momento non richiesto, ma `conti_config` lo accetta come fonte custom).
 - [ ] Audit ricavi/costi cross-periodo per cogliere fatture spostate di mese.
 

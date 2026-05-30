@@ -1559,6 +1559,163 @@ function StepClassificazione({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [applyingRules, setApplyingRules] = useState(false)
 
+  // Classificazioni AI per trans scoperte
+  interface AIClassification {
+    id: string
+    categoria?: string
+    possibile_causa?: string
+    azione_suggerita?: string
+    motivo_tralascia?: string | null
+  }
+  const [aiClassifications, setAiClassifications] = useState<Record<string, AIClassification>>({})
+  const [aiAnalyzing, setAiAnalyzing] = useState(false)
+
+  async function analizzaConAI() {
+    if (trans.length === 0) return
+    setAiAnalyzing(true)
+    try {
+      const payload = trans.slice(0, 30).map(t => ({
+        id: t.id,
+        data: t.data,
+        importo: t.importo,
+        controparte: t.controparte,
+        descrizione: t.descrizione,
+        conto: t.conto,
+      }))
+      const res = await fetch('/api/wizard/ai-classifica-scoperte', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trans: payload }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (res.status === 503) showFeedback('err', 'LLM non configurato. Aggiungi ANTHROPIC_API_KEY su Vercel.')
+        else throw new Error(data.error || 'Errore')
+        return
+      }
+      const map: Record<string, AIClassification> = {}
+      for (const c of data.classifications || []) {
+        if (c?.id) map[c.id] = c
+      }
+      setAiClassifications(prev => ({ ...prev, ...map }))
+      showFeedback('ok', `AI ha analizzato ${data.analyzed}/${data.total} trans`)
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore AI')
+    } finally {
+      setAiAnalyzing(false)
+    }
+  }
+
+  // Trans tralasciate del periodo (per la sezione "vedi tralasciate")
+  interface TransTralasciataLite {
+    id: string
+    importo: number
+    tipo: string
+    data: string
+    conto: string
+    controparte: string | null
+    descrizione: string | null
+    note: string | null
+    motivo: string
+  }
+  const [tralasciateList, setTralasciateList] = useState<TransTralasciataLite[]>([])
+  const [showTralasciate, setShowTralasciate] = useState(false)
+  const [cambioMotivoModal, setCambioMotivoModal] = useState<{
+    id: string
+    controparte: string | null
+    motivoAttuale: string
+    motivoNuovo: string
+    custom: string
+  } | null>(null)
+
+  const reloadTralasciate = useCallback(async () => {
+    if (!periodo.from || !periodo.to) return
+    try {
+      const url = `/api/transazioni?stato=non_trovata&from=${periodo.from}&to=${periodo.to}`
+      const res = await fetch(url)
+      const data = await res.json()
+      const list = Array.isArray(data) ? data : (data.transazioni || [])
+      // estraggo motivo da note
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const enriched = list.map((t: any) => {
+        const m = /^\[Tralasciata:\s*(.+?)\]/.exec(t.note || '')
+        return { ...t, motivo: m ? m[1] : '(senza motivo)' }
+      })
+      enriched.sort((a: TransTralasciataLite, b: TransTralasciataLite) => Math.abs(b.importo) - Math.abs(a.importo))
+      setTralasciateList(enriched)
+    } catch (e) {
+      console.error(e)
+    }
+  }, [periodo.from, periodo.to])
+
+  // Carica anche le tralasciate appena la lista delle scoperte si ricarica
+  useEffect(() => {
+    reloadTralasciate()
+  }, [reloadTralasciate])
+
+  async function ripristinaTralasciata(tId: string) {
+    if (!confirm('Ripristinare questa transazione? Tornerà tra le scoperte e potrai riclassificarla.')) return
+    try {
+      const res = await fetch(`/api/transazioni/ignora?ids=${tId}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Errore')
+      showFeedback('ok', 'Transazione ripristinata')
+      await reloadTrans()
+      await reloadTralasciate()
+      await onReloadStats()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  function apriCambioMotivo(t: TransTralasciataLite) {
+    setCambioMotivoModal({
+      id: t.id,
+      controparte: t.controparte,
+      motivoAttuale: t.motivo,
+      motivoNuovo: '',
+      custom: '',
+    })
+  }
+
+  async function submitCambioMotivo() {
+    if (!cambioMotivoModal) return
+    const motivoFinal = cambioMotivoModal.motivoNuovo === 'Altro'
+      ? cambioMotivoModal.custom.trim()
+      : cambioMotivoModal.motivoNuovo
+    if (!motivoFinal) {
+      showFeedback('err', 'Scegli o scrivi un motivo')
+      return
+    }
+    try {
+      // Ripristina e ri-tralascia con il nuovo motivo
+      const del = await fetch(`/api/transazioni/ignora?ids=${cambioMotivoModal.id}`, { method: 'DELETE' })
+      if (!del.ok) throw new Error('Errore ripristino')
+      const post = await fetch('/api/transazioni/ignora', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transazione_ids: [cambioMotivoModal.id], motivo: motivoFinal }),
+      })
+      const dataPost = await post.json()
+      if (!post.ok) throw new Error(dataPost.error || 'Errore')
+      showFeedback('ok', `Motivo cambiato in "${motivoFinal}"`)
+      setCambioMotivoModal(null)
+      await reloadTralasciate()
+    } catch (e: unknown) {
+      showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    }
+  }
+
+  // Mappa transId → enrichment PayPal: vero fornitore dietro al bonifico
+  interface PaypalEnrichment {
+    realControparte: string | null
+    realDescrizione: string | null
+    paypalCodice: string
+    paypalTransId: string | null
+    note?: string
+  }
+  const [enrichments, setEnrichments] = useState<Record<string, PaypalEnrichment>>({})
+
   const reloadTrans = useCallback(async () => {
     if (!periodo.from || !periodo.to) return
     setLoading(true)
@@ -1566,11 +1723,15 @@ function StepClassificazione({
       const url = `/api/transazioni?stato=da_riconciliare&from=${periodo.from}&to=${periodo.to}`
       const res = await fetch(url)
       const data = await res.json()
-      // /api/transazioni senza grouped ritorna un array piatto
       const list: TransScoperta[] = Array.isArray(data) ? data : (data.transazioni || [])
-      // ordina per importo DESC
       list.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
       setTrans(list)
+      // Arricchimento PayPal: chiamata in parallelo, non blocca la UI
+      try {
+        const enrRes = await fetch(`/api/transazioni/enrich-paypal?from=${periodo.from}&to=${periodo.to}`)
+        const enrData = await enrRes.json()
+        setEnrichments(enrData.enrichments || {})
+      } catch (e) { console.error('enrich-paypal', e) }
     } catch (e) {
       console.error(e)
     } finally {
@@ -1769,13 +1930,24 @@ function StepClassificazione({
             Tralascia ricorrenti (Stipendi, Agenzia delle Entrate, ecc.) memorizzando la regola: dalla prossima volta vengono tralasciate da sole.
           </p>
         </div>
-        <button
-          onClick={applicaRegoleEsistenti}
-          disabled={applyingRules}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white whitespace-nowrap"
-        >
-          {applyingRules ? 'Applico…' : 'Applica regole esistenti'}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={applicaRegoleEsistenti}
+            disabled={applyingRules}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white whitespace-nowrap"
+          >
+            {applyingRules ? 'Applico…' : 'Applica regole esistenti'}
+          </button>
+          <button
+            onClick={analizzaConAI}
+            disabled={aiAnalyzing || trans.length === 0}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white whitespace-nowrap"
+            title="Chiedi all'AI di analizzare le scoperte e suggerire motivazioni"
+          >
+            {aiAnalyzing ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+            {aiAnalyzing ? 'AI sta analizzando…' : 'Analizza scoperte con AI'}
+          </button>
+        </div>
       </div>
 
       {/* Toolbar selezione multipla */}
@@ -1837,9 +2009,30 @@ function StepClassificazione({
                   {new Date(t.data).toLocaleDateString('it-IT')}
                 </span>
                 <span className="capitalize text-gray-700 dark:text-gray-300 text-xs">{t.conto}</span>
-                <span className="text-gray-800 dark:text-gray-200 truncate flex-1" title={t.controparte || t.descrizione || ''}>
-                  {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
-                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-gray-800 dark:text-gray-200 truncate" title={t.controparte || ''}>
+                    {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
+                  </p>
+                  {/* Enrichment PayPal: mostra il VERO fornitore se ce l'abbiamo dal CSV PayPal */}
+                  {enrichments[t.id]?.realControparte && (
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate font-medium" title={`Da CSV PayPal · codice ${enrichments[t.id].paypalCodice}`}>
+                      ↳ <strong>{enrichments[t.id].realControparte}</strong>
+                      {enrichments[t.id].realDescrizione && <span className="opacity-70"> · {enrichments[t.id].realDescrizione}</span>}
+                    </p>
+                  )}
+                  {/* Enrichment PayPal con CSV mancante: hint */}
+                  {enrichments[t.id] && !enrichments[t.id].realControparte && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-300 truncate italic" title={enrichments[t.id].note}>
+                      ⚠ Codice PayPal {enrichments[t.id].paypalCodice} — CSV PayPal non caricato per risolvere il fornitore
+                    </p>
+                  )}
+                  {/* Descrizione/riferimento generico (non PayPal) */}
+                  {!enrichments[t.id] && t.descrizione && t.descrizione !== t.controparte && (
+                    <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate" title={t.descrizione}>
+                      {t.descrizione}
+                    </p>
+                  )}
+                </div>
 
                 {isEstero ? (
                   <>
@@ -1875,12 +2068,108 @@ function StepClassificazione({
         </div>
       )}
 
+      {/* Sezione collassabile: trans tralasciate del periodo */}
+      <div className="mb-6 border border-gray-200 dark:border-gray-700 rounded-lg">
+        <button
+          onClick={() => setShowTralasciate(s => !s)}
+          className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700"
+        >
+          <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+            Trans tralasciate del periodo ({tralasciateList.length})
+          </span>
+          <ChevronRight className={`h-4 w-4 transition-transform ${showTralasciate ? 'rotate-90' : ''}`} />
+        </button>
+        {showTralasciate && (
+          <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-3">
+            {tralasciateList.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-4">Nessuna trans tralasciata in questo periodo.</p>
+            ) : (
+              <div className="space-y-1 max-h-96 overflow-y-auto">
+                {tralasciateList.map(t => (
+                  <div key={t.id} className="flex items-center gap-3 px-3 py-2 rounded text-xs bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
+                    <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
+                      {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(Math.abs(t.importo))}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{new Date(t.data).toLocaleDateString('it-IT')}</span>
+                    <span className="capitalize text-gray-700 dark:text-gray-300">{t.conto}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-gray-800 dark:text-gray-200 truncate" title={t.controparte || ''}>{t.controparte || '—'}</p>
+                      {t.descrizione && t.descrizione !== t.controparte && (
+                        <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate" title={t.descrizione}>{t.descrizione}</p>
+                      )}
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 text-[10px] uppercase font-bold whitespace-nowrap" title={`Motivazione: ${t.motivo}`}>
+                      {t.motivo}
+                    </span>
+                    <button
+                      onClick={() => apriCambioMotivo(t)}
+                      className="text-[11px] text-indigo-600 hover:underline whitespace-nowrap"
+                      title="Cambia motivazione"
+                    >
+                      Cambia motivo
+                    </button>
+                    <button
+                      onClick={() => ripristinaTralasciata(t.id)}
+                      className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-300 hover:underline whitespace-nowrap"
+                      title="Ripristina nella lista delle scoperte"
+                    >
+                      <RefreshCw className="h-3 w-3" /> Ripristina
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="flex justify-between">
         <button onClick={onBack} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm font-medium">Indietro</button>
         <button onClick={onNext} className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium inline-flex items-center gap-1">
           Avanti <ChevronRight className="h-4 w-4" />
         </button>
       </div>
+
+      {/* Modale Cambia motivo */}
+      {cambioMotivoModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setCambioMotivoModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold mb-1">Cambia motivazione</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+              <strong>{cambioMotivoModal.controparte || '—'}</strong><br />
+              <span className="text-xs">Motivo attuale: <em>{cambioMotivoModal.motivoAttuale}</em></span>
+            </p>
+            <select
+              value={cambioMotivoModal.motivoNuovo}
+              onChange={e => setCambioMotivoModal(prev => prev ? { ...prev, motivoNuovo: e.target.value } : null)}
+              className="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600 mb-2"
+            >
+              <option value="">Scegli nuovo motivo…</option>
+              {MOTIVI_PREDEFINITI.map(m => <option key={m} value={m}>{m}</option>)}
+              <option value="Altro">Altro (scrivi)</option>
+            </select>
+            {cambioMotivoModal.motivoNuovo === 'Altro' && (
+              <input
+                type="text"
+                value={cambioMotivoModal.custom}
+                onChange={e => setCambioMotivoModal(prev => prev ? { ...prev, custom: e.target.value } : null)}
+                placeholder="Scrivi la motivazione"
+                className="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600 mb-2"
+              />
+            )}
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setCambioMotivoModal(null)} className="px-4 py-2 rounded bg-gray-100 dark:bg-gray-700 text-sm">Annulla</button>
+              <button onClick={submitCambioMotivo} className="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">Salva</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modale Tralascia */}
       {tralasciaModal && (

@@ -1845,6 +1845,10 @@ function StepClassificazione({
     setSelected(new Set())
   }
 
+  function isFornitoreEsteroAI(c: AIClassification): boolean {
+    return (c.categoria || '').toLowerCase() === 'fornitore_estero'
+  }
+
   async function submitTralascia() {
     if (!tralasciaModal) return
     const motivoFinal = tralasciaModal.motivo === 'Altro'
@@ -1950,12 +1954,32 @@ function StepClassificazione({
         throw new Error(data.error || 'Errore')
       }
       const next = { ...aiClassifications }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const foreignIds: string[] = []
       for (const c of data.classifications || []) {
-        if (c?.id) next[c.id] = c
+        if (!c?.id) continue
+        next[c.id] = c
+        if (isFornitoreEsteroAI(c)) foreignIds.push(c.id)
       }
       setAiClassifications(next)
-      showFeedback('ok', `AI ha analizzato ${data.analyzed || 0} trans${data.total > data.analyzed ? ` (di ${data.total} totali)` : ''}`)
+      let markedForeign = 0
+      if (foreignIds.length > 0) {
+        const newQueue = Array.from(new Set([...row.trans_estere_queue, ...foreignIds]))
+        markedForeign = newQueue.length - row.trans_estere_queue.length
+        if (markedForeign > 0) {
+          const patch = await fetch('/api/wizard/periodo', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: row.id, trans_estere_queue: newQueue }),
+          })
+          const patchData = await patch.json()
+          if (!patch.ok) throw new Error(patchData.error || 'Errore aggiornamento coda estero')
+          await onReloadRow()
+        }
+      }
+      const extra = markedForeign > 0
+        ? ` · ${markedForeign} estere messe in coda Step 5`
+        : ''
+      showFeedback('ok', `AI ha analizzato ${data.analyzed || 0} trans${data.total > data.analyzed ? ` (di ${data.total} totali)` : ''}${extra}`)
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore AI')
     } finally {
@@ -2083,7 +2107,7 @@ function StepClassificazione({
           ✓ Tutte le transazioni del periodo sono coperte o classificate. Passa allo Step 5 per caricare le fatture estere o salta direttamente al Riepilogo.
         </div>
       ) : (
-        <div className="space-y-1 mb-6 max-h-[500px] overflow-y-auto">
+        <div className="space-y-2 mb-6 max-h-[500px] overflow-y-auto">
           {trans.map(t => {
             const isEstero = queueSet.has(t.id)
             const importoAbs = Math.abs(t.importo)
@@ -2092,7 +2116,7 @@ function StepClassificazione({
             return (
               <div key={t.id} className="space-y-1">
               <div
-                className={`flex items-center gap-3 px-3 py-2 rounded text-sm border ${
+                className={`flex flex-col gap-2 px-3 py-2.5 rounded text-sm border sm:flex-row sm:items-center sm:gap-3 ${
                   isSelected
                     ? 'bg-amber-50 dark:bg-amber-950 border-amber-400'
                     : isEstero
@@ -2105,44 +2129,49 @@ function StepClassificazione({
                     type="checkbox"
                     checked={isSelected}
                     onChange={() => toggleSelected(t.id)}
-                    className="h-3.5 w-3.5 rounded border-gray-300 text-amber-600 flex-shrink-0"
+                    className="h-4 w-4 rounded border-gray-300 text-amber-600 sm:h-3.5 sm:w-3.5 sm:flex-shrink-0"
                   />
                 )}
-                <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
-                  {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(importoAbs)}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
-                  {new Date(t.data).toLocaleDateString('it-IT')}
-                </span>
-                <span className="capitalize text-gray-700 dark:text-gray-300 text-xs">{t.conto}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-gray-800 dark:text-gray-200 truncate" title={t.controparte || ''}>
+                <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+                  <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+                    <span className={`font-semibold whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
+                      {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(importoAbs)}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
+                      {new Date(t.data).toLocaleDateString('it-IT')}
+                    </span>
+                    <span className="capitalize text-gray-700 dark:text-gray-300 text-xs">{t.conto}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                  <p className="text-gray-800 dark:text-gray-200 break-words leading-snug sm:truncate" title={t.controparte || ''}>
                     {t.controparte || t.descrizione || <em className="text-gray-400">—</em>}
                   </p>
                   {/* Enrichment PayPal: mostra il VERO fornitore se ce l'abbiamo dal CSV PayPal */}
                   {enrichments[t.id]?.realControparte && (
-                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate font-medium" title={`Da CSV PayPal · codice ${enrichments[t.id].paypalCodice}`}>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 break-words font-medium sm:truncate" title={`Da CSV PayPal · codice ${enrichments[t.id].paypalCodice}`}>
                       ↳ <strong>{enrichments[t.id].realControparte}</strong>
                       {enrichments[t.id].realDescrizione && <span className="opacity-70"> · {enrichments[t.id].realDescrizione}</span>}
                     </p>
                   )}
                   {/* Enrichment PayPal con CSV mancante: hint */}
                   {enrichments[t.id] && !enrichments[t.id].realControparte && (
-                    <p className="text-[10px] text-amber-700 dark:text-amber-300 truncate italic" title={enrichments[t.id].note}>
+                    <p className="text-[10px] text-amber-700 dark:text-amber-300 break-words italic sm:truncate" title={enrichments[t.id].note}>
                       ⚠ Codice PayPal {enrichments[t.id].paypalCodice} — CSV PayPal non caricato per risolvere il fornitore
                     </p>
                   )}
                   {/* Descrizione/riferimento generico (non PayPal) */}
                   {!enrichments[t.id] && t.descrizione && t.descrizione !== t.controparte && (
-                    <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate" title={t.descrizione}>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 break-words leading-snug sm:text-[10px] sm:truncate" title={t.descrizione}>
                       {t.descrizione}
                     </p>
                   )}
+                  </div>
                 </div>
 
-                {isEstero ? (
-                  <>
-                    <span className="px-2 py-0.5 text-[10px] uppercase rounded bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100 font-bold flex items-center gap-1">
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap sm:justify-end">
+                  {isEstero ? (
+                    <>
+                    <span className="px-2 py-1 sm:py-0.5 text-[10px] uppercase rounded bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100 font-bold flex items-center gap-1">
                       <Globe className="h-3 w-3" /> Estero
                     </span>
                     <button
@@ -2156,23 +2185,24 @@ function StepClassificazione({
                   <>
                     <button
                       onClick={() => marcaEstero(t.id)}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-100 hover:bg-blue-200 dark:bg-blue-900 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200 font-medium"
+                      className="inline-flex items-center gap-1 px-2 py-1.5 sm:py-1 text-xs rounded bg-blue-100 hover:bg-blue-200 dark:bg-blue-900 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200 font-medium"
                     >
                       <Globe className="h-3 w-3" /> Estero
                     </button>
                     <button
                       onClick={() => apriTralasciaSingola(t.id)}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-amber-100 hover:bg-amber-200 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-700 dark:text-amber-200 font-medium"
+                      className="inline-flex items-center gap-1 px-2 py-1.5 sm:py-1 text-xs rounded bg-amber-100 hover:bg-amber-200 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-700 dark:text-amber-200 font-medium"
                     >
                       Tralascia
                     </button>
                   </>
                 )}
+                </div>
               </div>
 
               {/* Pannello AI: classificazione + azione consigliata */}
               {ai && !isEstero && (
-                <div className="ml-8 mr-4 mb-1 px-3 py-2 rounded bg-purple-50/60 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 text-xs">
+                <div className="sm:ml-8 sm:mr-4 mb-1 px-3 py-2 rounded bg-purple-50/60 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 text-xs">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <span className="text-purple-700 dark:text-purple-300 font-bold">🤖 AI:</span>
                     {ai.categoria && (
@@ -2233,35 +2263,39 @@ function StepClassificazione({
             ) : (
               <div className="space-y-1 max-h-96 overflow-y-auto">
                 {tralasciateList.map(t => (
-                  <div key={t.id} className="flex items-center gap-3 px-3 py-2 rounded text-xs bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-                    <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
-                      {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(Math.abs(t.importo))}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{new Date(t.data).toLocaleDateString('it-IT')}</span>
-                    <span className="capitalize text-gray-700 dark:text-gray-300">{t.conto}</span>
+                  <div key={t.id} className="flex flex-col gap-2 px-3 py-2 rounded text-xs bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 sm:flex-row sm:items-center sm:gap-3">
+                    <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+                      <span className={`font-medium whitespace-nowrap ${t.tipo === 'entrata' ? 'text-green-700' : 'text-red-700'}`}>
+                        {t.tipo === 'entrata' ? '+' : '−'}{formatCurrency(Math.abs(t.importo))}
+                      </span>
+                      <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{new Date(t.data).toLocaleDateString('it-IT')}</span>
+                      <span className="capitalize text-gray-700 dark:text-gray-300">{t.conto}</span>
+                    </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-gray-800 dark:text-gray-200 truncate" title={t.controparte || ''}>{t.controparte || '—'}</p>
+                      <p className="text-gray-800 dark:text-gray-200 break-words sm:truncate" title={t.controparte || ''}>{t.controparte || '—'}</p>
                       {t.descrizione && t.descrizione !== t.controparte && (
-                        <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate" title={t.descrizione}>{t.descrizione}</p>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 break-words sm:text-[10px] sm:truncate" title={t.descrizione}>{t.descrizione}</p>
                       )}
                     </div>
-                    <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 text-[10px] uppercase font-bold whitespace-nowrap" title={`Motivazione: ${t.motivo}`}>
-                      {t.motivo}
-                    </span>
-                    <button
-                      onClick={() => apriCambioMotivo(t)}
-                      className="text-[11px] text-indigo-600 hover:underline whitespace-nowrap"
-                      title="Cambia motivazione"
-                    >
-                      Cambia motivo
-                    </button>
-                    <button
-                      onClick={() => ripristinaTralasciata(t.id)}
-                      className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-300 hover:underline whitespace-nowrap"
-                      title="Ripristina nella lista delle scoperte"
-                    >
-                      <RefreshCw className="h-3 w-3" /> Ripristina
-                    </button>
+                    <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                      <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 text-[10px] uppercase font-bold whitespace-nowrap" title={`Motivazione: ${t.motivo}`}>
+                        {t.motivo}
+                      </span>
+                      <button
+                        onClick={() => apriCambioMotivo(t)}
+                        className="text-[11px] text-indigo-600 hover:underline whitespace-nowrap"
+                        title="Cambia motivazione"
+                      >
+                        Cambia motivo
+                      </button>
+                      <button
+                        onClick={() => ripristinaTralasciata(t.id)}
+                        className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-300 hover:underline whitespace-nowrap"
+                        title="Ripristina nella lista delle scoperte"
+                      >
+                        <RefreshCw className="h-3 w-3" /> Ripristina
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -42,6 +42,11 @@ Per ognuna devi proporre:
 3) azione_suggerita: cosa fare concretamente, in italiano (es. "Vai sul cassetto fiscale e cerca fatture MEDIAWORLD marzo-aprile-maggio 2026")
 4) motivo_tralascia: SOLO se sei sicuro che la trans non dovrà mai avere fattura, proponi una delle categorie standard: [Stipendi, Imposte e tasse, Commissioni bancarie, Spostamento tra conti, Movimento personale, Importo piccolo, Spesa sbagliata]. Altrimenti null.
 
+REGOLE IMPORTANTI:
+- Se riconosci un fornitore estero o una fattura estera da scaricare (OpenAI, Anthropic, AWS, Google, Microsoft, Stripe, Vimeo, Vercel, WIX, Discovercars, ecc.), usa categoria "fornitore_estero".
+- Per categoria "fornitore_estero", motivo_tralascia deve essere SEMPRE null: non va tralasciata, va messa in coda allo Step 5.
+- Per categoria "fornitore_estero", azione_suggerita deve dire di caricare/scaricare la fattura estera nello Step 5. Non proporre di creare automaticamente una fattura.
+
 USA la tua conoscenza dei fornitori (Anthropic, OpenAI, AWS, Google, Stripe, Vimeo, REGUS, Vercel, LIME, ATAC, Trenitalia, ALD AUTOMOTIVE, TIM, Wind Tre, ...) per riconoscere subito chi è il soggetto.
 
 Rispondi SOLO con un JSON array, una entry per trans nell'ordine ricevuto:

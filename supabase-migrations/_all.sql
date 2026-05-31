@@ -83,3 +83,11 @@ CREATE TABLE IF NOT EXISTS auto_tralascia_rules (
   last_applied_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS auto_tralascia_motivo_idx ON auto_tralascia_rules (motivo);
+
+-- =============== Upload allegato fatture estere ===============
+ALTER TABLE fatture
+  ADD COLUMN IF NOT EXISTS allegato_path TEXT;
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('fatture-estere', 'fatture-estere', false)
+ON CONFLICT (id) DO NOTHING;

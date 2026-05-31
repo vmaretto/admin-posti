@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   Calendar, Check, ChevronRight, Wand2, ArrowRight, RefreshCw, AlertTriangle,
-  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X, Sparkles, Trash2,
+  Banknote, Receipt, Zap, Globe, ClipboardCheck, Plus, X, Sparkles, Trash2, Upload,
 } from 'lucide-react'
 import {
   parsePeriodo, formatPeriodoSlug, defaultPeriodoSlug, PeriodoTipo, MESI_LABELS,
@@ -2680,6 +2680,8 @@ function StepFattureEstere({
   const [trans, setTrans] = useState<TransScoperta[]>([])
   const [loading, setLoading] = useState(true)
   const [forms, setForms] = useState<Record<string, FatturaEsteraForm>>({})
+  const [files, setFiles] = useState<Record<string, File | null>>({})
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
 
   const reloadQueueDetails = useCallback(async () => {
     if (row.trans_estere_queue.length === 0) {
@@ -2693,7 +2695,13 @@ function StepFattureEstere({
       const res = await fetch(`/api/transazioni?ids=${ids}`)
       const data = await res.json()
       const list: TransScoperta[] = Array.isArray(data) ? data : []
-      list.sort((a, b) => Math.abs(b.importo) - Math.abs(a.importo))
+      // Ordina alfabeticamente per fornitore (controparte), poi per importo.
+      list.sort((a, b) => {
+        const fa = (a.controparte || '').toLowerCase()
+        const fb = (b.controparte || '').toLowerCase()
+        const byForn = fa.localeCompare(fb, 'it')
+        return byForn !== 0 ? byForn : Math.abs(b.importo) - Math.abs(a.importo)
+      })
       setTrans(list)
       // Pre-compila form per ogni trans
       const newForms: Record<string, FatturaEsteraForm> = {}
@@ -2725,37 +2733,46 @@ function StepFattureEstere({
     setForms(prev => ({ ...prev, [tId]: { ...prev[tId], [field]: value } }))
   }
 
-  async function createFattura(tId: string) {
+  async function uploadFattura(tId: string) {
     const f = forms[tId]
     if (!f) return
-    if (!f.numero.trim() || !f.denominazione_fornitore.trim() || !f.data_emissione || !f.totale) {
-      showFeedback('err', 'Compila numero, fornitore, data e totale')
+    const file = files[tId]
+    if (!file) {
+      showFeedback('err', 'Seleziona il PDF della fattura da caricare')
       return
     }
+    if (!f.denominazione_fornitore.trim() || !f.data_emissione || !f.totale) {
+      showFeedback('err', 'Compila fornitore, data e totale')
+      return
+    }
+    setUploadingId(tId)
     try {
-      const res = await fetch('/api/wizard/crea-fattura-estera', {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('transazione_id', tId)
+      fd.append('numero', f.numero || '')
+      fd.append('denominazione_fornitore', f.denominazione_fornitore)
+      fd.append('data_emissione', f.data_emissione)
+      fd.append('totale', String(Number(f.totale)))
+      fd.append('valuta', f.valuta)
+      fd.append('importo_originale', String(Number(f.importo_originale)))
+      if (f.piva_fornitore) fd.append('piva_fornitore', f.piva_fornitore)
+      if (f.note) fd.append('note', f.note)
+      fd.append('wizard_periodo_id', row.id)
+
+      const res = await fetch('/api/wizard/upload-fattura-estera', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transazione_id: tId,
-          numero: f.numero,
-          denominazione_fornitore: f.denominazione_fornitore,
-          data_emissione: f.data_emissione,
-          totale: Number(f.totale),
-          valuta: f.valuta,
-          importo_originale: Number(f.importo_originale),
-          piva_fornitore: f.piva_fornitore || undefined,
-          note: f.note || undefined,
-          wizard_periodo_id: row.id,
-        }),
+        body: fd,
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Errore')
-      showFeedback('ok', 'Fattura estera creata e collegata')
+      showFeedback('ok', 'Fattura estera caricata e collegata')
       await onReloadRow()
       await onReloadStats()
     } catch (e: unknown) {
       showFeedback('err', e instanceof Error ? e.message : 'Errore')
+    } finally {
+      setUploadingId(null)
     }
   }
 
@@ -2779,9 +2796,10 @@ function StepFattureEstere({
     <div>
       <h2 className="text-xl font-bold mb-1">Step 5 — Carica fatture estere</h2>
       <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-        Per ogni trans marcata Estero allo Step 4, compila i campi della fattura del fornitore e
-        clicca <strong>Crea fattura</strong>. La fattura viene creata e collegata alla trans (entrambe
-        passano in stato &ldquo;riconciliata&rdquo;).
+        Per ogni trans marcata Estero allo Step 4, <strong>carica il PDF</strong> della fattura del
+        fornitore (i campi sono precompilati e modificabili) e clicca <strong>Carica fattura</strong>.
+        Il file viene salvato e la fattura collegata alla trans (entrambe passano in stato
+        &ldquo;riconciliata&rdquo;). La coda è ordinata per fornitore.
       </p>
 
       {loading ? (
@@ -2819,12 +2837,12 @@ function StepFattureEstere({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Numero fattura *</label>
+                    <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">Numero fattura</label>
                     <input
                       type="text"
                       value={f.numero || ''}
                       onChange={e => updateForm(t.id, 'numero', e.target.value)}
-                      placeholder="es. INV-001"
+                      placeholder="auto se vuoto"
                       className="w-full text-sm border rounded px-2 py-1.5 dark:bg-gray-700 dark:border-gray-600"
                     />
                   </div>
@@ -2881,12 +2899,26 @@ function StepFattureEstere({
                   </div>
                 </div>
 
+                <div className="mt-3">
+                  <label className="block text-[10px] uppercase tracking-wide font-semibold text-gray-500 mb-1">PDF fattura *</label>
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={e => setFiles(prev => ({ ...prev, [t.id]: e.target.files?.[0] ?? null }))}
+                    className="block w-full text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 dark:file:bg-indigo-900 dark:file:text-indigo-200"
+                  />
+                  {files[t.id] && (
+                    <p className="mt-1 text-xs text-gray-500 truncate">{files[t.id]!.name}</p>
+                  )}
+                </div>
+
                 <div className="mt-3 flex justify-end">
                   <button
-                    onClick={() => createFattura(t.id)}
-                    className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded"
+                    onClick={() => uploadFattura(t.id)}
+                    disabled={uploadingId === t.id || !files[t.id]}
+                    className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded"
                   >
-                    <Check className="h-4 w-4" /> Crea fattura
+                    <Upload className="h-4 w-4" /> {uploadingId === t.id ? 'Caricamento…' : 'Carica fattura'}
                   </button>
                 </div>
               </div>
